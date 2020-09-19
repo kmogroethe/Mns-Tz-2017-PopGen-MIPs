@@ -1,5 +1,5 @@
 ---
-title: "NIMR Tanzania MIP Analysis - Missigness"i
+title: "NIMR Tanzania MIP Analysis - Missigness"
 knit: (function(input_file, encoding) {
   out_dir <- 'docs';
   rmarkdown::render(input_file,
@@ -27,10 +27,13 @@ library(kableExtra)
 # Read in necessary data sets for analysis
 
 # vcf file (pcoa, dapc)
-vcf <- read.vcfR("variants.fixed_genos.biallelic.targets_only.recode.vcf", verbose=FALSE)
+vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.biallelic.targets_only.recode.vcf", verbose=FALSE)
 
-# missingness information
-all_metad1800 <- read.table("metad.txt",sep="\t",header=TRUE)
+# 1800 MIP metad
+all_metad1800 <- read.table("/nas/longleaf/home/kamoser/daily/2009/tanzania_mip_analysis/metad_final/metad.txt",sep="\t",header=TRUE)
+
+#DR MIP metad
+all_metadDR <- read.table("/nas/longleaf/home/kamoser/daily/2009/tanzania_mip_analysis/metad_final/metadDR.txt",sep="\t", header=TRUE)
 
 ```
 
@@ -56,37 +59,12 @@ all_metad1800 <- read.table("metad.txt",sep="\t",header=TRUE)
 
 <br />
 
-```{r create_metad, comment=NA}
-
-tmp <- merge(metad,plate,by=c("sample_id"),all=TRUE)
-tmp2 <- merge(tmp,imiss1800,by=c("sample_id"),all=TRUE)
-tmp3 <- merge(tmp2,para,by=c("ID"),all.x=TRUE)
-
-# 6 entries appear to be missing upon sample arrival at IDEEL
-# These are removed below (according to the plate maps there's 66 of these samples, but for whtaever reason they're not in my other datasets)
-
-all_metad <- tmp3 %>%
-  filter(!is.na(sample_id)) %>%
-  select(ID,sample_id,DISTRICT,REGION,Capture.Plate.Name,Capture.Plate.Location,
-       vilid,vilname,latitude,longitude,altitude,age,pfdens,N_MISS,F_MISS)
-
-#samples that didn't make it into the vcf file have missing values but that means they have 0 data succesfully generated after sequencing
-#all_metad$F_MISS[is.na(all_metad)]
-all_metad$F_MISS[is.na(all_metad$F_MISS)] <- 1
-all_metad <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
-all_metad <- all_metad[which(!is.na(all_metad$DISTRICT)),] #T0578 ???
-all_metad1800 <- all_metad
-
-```
-
-<br />
-
 - For 552 samples collected as part of the 'Hotspots' study, we have parasitemia (parasite density) data 
 - First plot below shows missingness (frequency of the 1800 target SNPs that failed to genotype), second plot shows the same thing after removing two outliers (>200k parasite density) stratified by location and plate:
 
 ```{r missp}
 
-hotspot <- all_metad[which(!is.na(all_metad$pfdens)),]
+hotspot <- all_metad1800[which(!is.na(all_metad1800$pfdens)),]
 hotspot$platenum <- as.factor(hotspot$platenum)
 ggplotly(ggplot(hotspot, aes(x=pfdens, y=F_MISS,col=DISTRICT)) +
   geom_point(size=2) +
@@ -129,7 +107,7 @@ dp2 <- melt(dp)
 dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
 
 colnames(dp2) <- c("snp","sample_id","value","miss")
-dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+dp3 <- merge(dp2,all_metad1800,by=c("sample_id"),all.y = TRUE)
 #dp3$cell <- substring(dp3$Capture.Plate.Location,2)
 #dp3$row <- substr(dp3$Capture.Plate.Location,1,1)
 #dp3$well <- as.numeric(dp3$cell)
@@ -152,7 +130,7 @@ dp2 <- melt(temp)
 dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
 
 colnames(dp2) <- c("snp","sample_id","value","miss")
-dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+dp3 <- merge(dp2,all_metad1800,by=c("sample_id"),all.y = TRUE)
 dp3$well <- as.numeric(substring(dp3$Capture.Plate.Location,2))
 dp3$row <- substr(dp3$Capture.Plate.Location,1,1)
 
@@ -238,67 +216,6 @@ summary(model3)
 
 <br />
 
-```{r create_metadDR}
-
-tmp <- merge(metad,plate,by=c("sample_id"),all=TRUE)
-tmp2 <- merge(tmp,imissDR,by=c("sample_id"),all=TRUE)
-tmp3 <- merge(tmp2,para,by=c("ID"),all.x=TRUE)
-
-# 6 entries appear to be missing upon sample arrival at IDEEL
-# These are removed below (according to the plate maps there's 66 of these samples, but for whtaever reason they're not in my other datasets)
-
-all_metad <- tmp3 %>%
-  filter(!is.na(sample_id)) %>%
-  select(ID,sample_id,DISTRICT,REGION,Capture.Plate.Name,Capture.Plate.Location,
-       vilid,vilname,latitude,longitude,altitude,age,pfdens,N_MISS,F_MISS)
-
-all_metad$F_MISS[is.na(all_metad$F_MISS)] <- 1
-
-#remove the second replicates
-all_metad <- all_metad[which(!is.na(all_metad$DISTRICT)),]
-all_metad <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
-
-```
-
-```{r repsDR, echo=FALSE}
-
-# 80 samples have a second replicate (JJJ-1, JJJ-2)
-# Overall, the second replicate for these samples worked much better than the first, and so the JJJ-2 replicates are used moving forward (why not combine these data in the pipeline???)
-
-tmp3 <- transform(tmp3,platenum=as.numeric(factor(Capture.Plate.Name)))
-
-rep2 <- tmp3[which(is.na(tmp3$Capture.Plate.Name)),]
-rep2$ID <- substr(rep2$sample_id, 1,8)
-
-dups <- merge(rep2,tmp3,by=c("ID"),x.all=TRUE)
-
-#this shows the higher missigness among the first replicates (F_MISS.y)
-#plot(dups$F_MISS.x,dups$F_MISS.y)
-
-#remove the JJJ-1 replicates, replace with JJJ-2
-dups_meta <- dups %>%
-  select(sample_id.x,ID,
-         N_MISS.x, F_MISS.x, DISTRICT.y,REGION.y,
-         Capture.Plate.Location.y,Capture.Plate.Name.y,
-         vilid.y,vilname.y,platenum.y,
-         latitude.y,longitude.y,altitude.y,age.y,pfdens.y,platenum.y) %>%
-  filter(!is.na(sample_id.x))
-
-colnames(dups_meta) <- c("sample_id","ID",
-         "N_MISS","F_MISS","DISTRICT","REGION",
-         "Capture.Plate.Location","Capture.Plate.Name",
-         "vilid","vilname","platenum",
-         "latitude","longitude","altitude","age","pfdens")
-
-removed <- all_metad[!(all_metad$ID %in% dups$ID),]
-
-all_metad <- rbind(removed,dups_meta)
-all_metadDR <- all_metad
-
-```
-
-<br />
-
 - Here's everything repeated, but for the drug resistance MIP panel.
 
 <br />
@@ -307,7 +224,7 @@ Show missingness by parasitemia
 
 ```{r misspDR}
 
-hotspot <- all_metad[which(!is.na(all_metad$pfdens)),]
+hotspot <- all_metadDR[which(!is.na(all_metadDR$pfdens)),]
 hotspot$platenum <- as.factor(hotspot$platenum)
 ggplotly(ggplot(hotspot, aes(x=pfdens, y=F_MISS,col=DISTRICT)) +
   geom_point(size=2) +
@@ -348,7 +265,7 @@ dp2 <- melt(dp)
 dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
 
 colnames(dp2) <- c("snp","sample_id","value","miss")
-dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+dp3 <- merge(dp2,all_metadDR,by=c("sample_id"),all.y = TRUE)
 
 # finding which samples didn't even make it to the vcf file
 failed <- droplevels(dp3[which(is.na(dp3$snp)),])
@@ -367,7 +284,7 @@ dp2 <- melt(temp)
 dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
 
 colnames(dp2) <- c("snp","sample_id","value","miss")
-dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+dp3 <- merge(dp2,all_metadDR,by=c("sample_id"),all.y = TRUE)
 dp3$well <- as.numeric(substring(dp3$Capture.Plate.Location,2))
 dp3$row <- substr(dp3$Capture.Plate.Location,1,1)
 
