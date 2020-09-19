@@ -1,0 +1,11 @@
+me: "NIMR Tanzania MIP Analysis"
+output_dir: "docs"
+navbar:
+  title: "Tanz-MIPs"
+  left:
+  - text: "Home"
+    href: index.html
+  - text: "Missingness"
+    href: 00-NIMR-TANZ-missingness.Rmd.html
+output:
+  html_document:
