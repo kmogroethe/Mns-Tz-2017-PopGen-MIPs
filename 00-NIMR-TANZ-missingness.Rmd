@@ -1,0 +1,467 @@
+---
+title: "NIMR Tanzania MIP Analysis - Missigness"
+---
+
+```{r global option,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE,message=FALSE)
+
+.libPaths("/nas/longleaf/home/kamoser/bin/rlib/")
+
+library(vcfR)
+library(adegenet)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(naniar)
+library(plotly)
+library(reshape2)
+library(gridExtra)
+library(viridis)
+library(kableExtra)
+
+# Read in necessary data sets for analysis
+
+# vcf file (pcoa, dapc)
+vcf <- read.vcfR("variants.fixed_genos.biallelic.targets_only.recode.vcf", verbose=FALSE)
+
+# missingness information
+all_metad1800 <- read.table("metad.txt",sep="\t",header=TRUE)
+
+```
+
+<br />
+
+## Overview
+
+<br />
+
+- 1,242 samples collected, captured, and sequenced from 13 locations across Tanzania
+  - I have sequencing data for 1,237 of these. Notes on plate maps that some samples were missing.
+- Genotyped using: 
+    - ~1800 MIP panel
+        - Targets 1,800 SNPs across the genome (combination of neutral and under selection)
+        - 3 total sequencing runs
+    - Drug resistance MIP panel
+       - Targets mutations in 13 genes associated with drug resistance
+       - 2 total sequencing runs
+
+<br />
+
+## Missingness - 1800 MIP Panel
+
+<br />
+
+```{r create_metad, comment=NA}
+
+tmp <- merge(metad,plate,by=c("sample_id"),all=TRUE)
+tmp2 <- merge(tmp,imiss1800,by=c("sample_id"),all=TRUE)
+tmp3 <- merge(tmp2,para,by=c("ID"),all.x=TRUE)
+
+# 6 entries appear to be missing upon sample arrival at IDEEL
+# These are removed below (according to the plate maps there's 66 of these samples, but for whtaever reason they're not in my other datasets)
+
+all_metad <- tmp3 %>%
+  filter(!is.na(sample_id)) %>%
+  select(ID,sample_id,DISTRICT,REGION,Capture.Plate.Name,Capture.Plate.Location,
+       vilid,vilname,latitude,longitude,altitude,age,pfdens,N_MISS,F_MISS)
+
+#samples that didn't make it into the vcf file have missing values but that means they have 0 data succesfully generated after sequencing
+#all_metad$F_MISS[is.na(all_metad)]
+all_metad$F_MISS[is.na(all_metad$F_MISS)] <- 1
+all_metad <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
+all_metad <- all_metad[which(!is.na(all_metad$DISTRICT)),] #T0578 ???
+all_metad1800 <- all_metad
+
+```
+
+<br />
+
+- For 552 samples collected as part of the 'Hotspots' study, we have parasitemia (parasite density) data 
+- First plot below shows missingness (frequency of the 1800 target SNPs that failed to genotype), second plot shows the same thing after removing two outliers (>200k parasite density) stratified by location and plate:
+
+```{r missp}
+
+hotspot <- all_metad[which(!is.na(all_metad$pfdens)),]
+hotspot$platenum <- as.factor(hotspot$platenum)
+ggplotly(ggplot(hotspot, aes(x=pfdens, y=F_MISS,col=DISTRICT)) +
+  geom_point(size=2) +
+  xlab("Parasite Density") +
+  ylab("Frequency of Missing Genotypes"))
+  #+scale_x_continuous(labels = comma))
+
+#ggplot(hotspot, aes(pfdens,F_MISS,color=Capture.Plate.Name)) +
+#  geom_point(size=0.8) +
+#  facet_wrap(~DISTRICT,nrow=3,scales="free")
+
+hotspot2 <- hotspot[which(hotspot$pfdens < 200000),]
+
+ggplot(hotspot2, aes(pfdens,F_MISS,color=platenum)) +
+  geom_point(size=0.8) +
+  facet_wrap(~DISTRICT,nrow=3,scales="free") +
+  xlab("Parasite Density") +
+  ylab("Frequency of Missing Genotypes")
+
+#ggplot(hotspot2, aes(pfdens,F_MISS,color=DISTRICT)) +
+#  geom_point(size=0.8) +
+#  facet_wrap(~Capture.Plate.Name,nrow=3,scales="free")
+
+```
+
+- While parasitemia definetly contributes to high levels of missigness, some samples with high parasitemias are still failing.
+
+<br />
+
+- To see if expireiminatl failures contirbute to missingnes, I looked at missinges by plate (x axis) and target SNP position (y-axis):
+
+<br />
+
+```{r miss}
+
+#metad2 <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
+
+dp <- extract.gt(vcf, element = "DP", as.numeric=TRUE)
+dp2 <- melt(dp)
+dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
+
+colnames(dp2) <- c("snp","sample_id","value","miss")
+dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+#dp3$cell <- substring(dp3$Capture.Plate.Location,2)
+#dp3$row <- substr(dp3$Capture.Plate.Location,1,1)
+#dp3$well <- as.numeric(dp3$cell)
+
+# finding which samples didn't even make it to the vcf file
+failed <- droplevels(dp3[which(is.na(dp3$snp)),])
+failed_samps <- failed$sample_id #vector of failed samples
+failed_samp <- as.data.frame(failed$sample_id) # dataframe of failed samples
+
+#adding them back in
+numsnps <- nrow(dp)
+numsamps <- nrow(failed_samp)
+missing_samps <- matrix( , nrow=numsnps, ncol=numsamps)
+#missing_samps <- matrix( , nrow=1629,ncol = 216)
+colnames(missing_samps) <- failed_samps[1:numsamps]
+temp <- cbind(dp,missing_samps)
+
+#redo
+dp2 <- melt(temp)
+dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
+
+colnames(dp2) <- c("snp","sample_id","value","miss")
+dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+dp3$well <- as.numeric(substring(dp3$Capture.Plate.Location,2))
+dp3$row <- substr(dp3$Capture.Plate.Location,1,1)
+
+dp4 <- dp3[order(dp3$platenum, dp3$row, dp3$well),]
+
+ggplot(data = dp4, aes(x=Capture.Plate.Location, y=snp, fill=miss)) + 
+  geom_tile() +
+  scale_fill_manual(values=c("green","black"),name="", labels=c("Genotyped","Missing")) +
+  xlab("Sample, by Plate") + ylab("Target MIP") +
+  facet_grid(. ~ platenum, space="free_x", scales="free_x", switch="x") +
+  #labs(fill = "")
+  theme(
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank()
+    )
+  
+```
+
+<br />
+
+- Plates 3 (Hotspots_P1), 4 (Hotspots_P2), and 12 (TES_2017_P8) all had high levels of missingess
+- These plates contain samples from:
+    - Chato (plates 3 & 4)
+    - Nyanghwale and Uvinza (plates 4)
+    - Ilemela and Kyela (plate 12)
+
+<br />
+
+- It clearly matters what plate a sample is on, and while parasitemia still contributes, it matters less if it wasn't on one of plates 3, 4, or 12. For example, Uvinza samples, which were spread between plates 4, 5, and 6 had less missingness when they were on 5 compraed to when they were on 4:
+
+```{r uvinza1800, warning=FALSE,message=FALSE, comment=NA}
+
+dp6 <- dp4[which(dp4$DISTRICT == "UVINZA"),]
+dp6$platenum <- as.factor(dp6$platenum)
+dp7 <- droplevels(dp6)
+
+ggplot(data = dp7, aes(x=Capture.Plate.Location, y=snp, fill=miss)) + 
+  geom_tile() +
+  scale_fill_manual(values=c("green","black"),name="", labels=c("Genotyped","Missing")) +
+  xlab("Sample, by Plate") + ylab("Target MIP") +
+  facet_grid(. ~ platenum, space="free_x", scales="free_x", switch="x") +
+  #labs(fill = "")
+  theme(
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank()
+    )
+
+```
+
+<br />
+
+- Here's some simple linear regression models capturing this relationship. 
+- Here is missingness regressed on parasite-density and plate for the whole data set:
+
+```{r missmodel}
+
+#model <- lm(hotspot2$F_MISS ~ hotspot2$pfdens)
+#summary(model)
+model2 <- lm(hotspot2$F_MISS ~ hotspot2$pfdens + hotspot2$platenum)
+summary(model2)
+
+```
+
+
+- Here's the same model, but for just the UVINZA samples:
+
+```{r modelu1800}
+
+uvinza <- hotspot2[which(hotspot2$DISTRICT == "UVINZA"),]
+uvinza$platenum <- as.factor(uvinza$platenum)
+model3 <- lm(uvinza$F_MISS ~ uvinza$pfdens + uvinza$platenum)
+summary(model3)
+
+```
+
+<br />
+
+## Missingness - Drug Resistance MIP Panel
+
+<br />
+
+```{r create_metadDR}
+
+tmp <- merge(metad,plate,by=c("sample_id"),all=TRUE)
+tmp2 <- merge(tmp,imissDR,by=c("sample_id"),all=TRUE)
+tmp3 <- merge(tmp2,para,by=c("ID"),all.x=TRUE)
+
+# 6 entries appear to be missing upon sample arrival at IDEEL
+# These are removed below (according to the plate maps there's 66 of these samples, but for whtaever reason they're not in my other datasets)
+
+all_metad <- tmp3 %>%
+  filter(!is.na(sample_id)) %>%
+  select(ID,sample_id,DISTRICT,REGION,Capture.Plate.Name,Capture.Plate.Location,
+       vilid,vilname,latitude,longitude,altitude,age,pfdens,N_MISS,F_MISS)
+
+all_metad$F_MISS[is.na(all_metad$F_MISS)] <- 1
+
+#remove the second replicates
+all_metad <- all_metad[which(!is.na(all_metad$DISTRICT)),]
+all_metad <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
+
+```
+
+```{r repsDR, echo=FALSE}
+
+# 80 samples have a second replicate (JJJ-1, JJJ-2)
+# Overall, the second replicate for these samples worked much better than the first, and so the JJJ-2 replicates are used moving forward (why not combine these data in the pipeline???)
+
+tmp3 <- transform(tmp3,platenum=as.numeric(factor(Capture.Plate.Name)))
+
+rep2 <- tmp3[which(is.na(tmp3$Capture.Plate.Name)),]
+rep2$ID <- substr(rep2$sample_id, 1,8)
+
+dups <- merge(rep2,tmp3,by=c("ID"),x.all=TRUE)
+
+#this shows the higher missigness among the first replicates (F_MISS.y)
+#plot(dups$F_MISS.x,dups$F_MISS.y)
+
+#remove the JJJ-1 replicates, replace with JJJ-2
+dups_meta <- dups %>%
+  select(sample_id.x,ID,
+         N_MISS.x, F_MISS.x, DISTRICT.y,REGION.y,
+         Capture.Plate.Location.y,Capture.Plate.Name.y,
+         vilid.y,vilname.y,platenum.y,
+         latitude.y,longitude.y,altitude.y,age.y,pfdens.y,platenum.y) %>%
+  filter(!is.na(sample_id.x))
+
+colnames(dups_meta) <- c("sample_id","ID",
+         "N_MISS","F_MISS","DISTRICT","REGION",
+         "Capture.Plate.Location","Capture.Plate.Name",
+         "vilid","vilname","platenum",
+         "latitude","longitude","altitude","age","pfdens")
+
+removed <- all_metad[!(all_metad$ID %in% dups$ID),]
+
+all_metad <- rbind(removed,dups_meta)
+all_metadDR <- all_metad
+
+```
+
+<br />
+
+- Here's everything repeated, but for the drug resistance MIP panel.
+
+<br />
+
+Show missingness by parasitemia
+
+```{r misspDR}
+
+hotspot <- all_metad[which(!is.na(all_metad$pfdens)),]
+hotspot$platenum <- as.factor(hotspot$platenum)
+ggplotly(ggplot(hotspot, aes(x=pfdens, y=F_MISS,col=DISTRICT)) +
+  geom_point(size=2) +
+  xlab("Parasite Density") +
+  ylab("Frequency of Sites with No Sequencing Data"))
+  #+scale_x_continuous(labels = comma))
+
+#ggplot(hotspot, aes(pfdens,F_MISS,color=Capture.Plate.Name)) +
+#  geom_point(size=0.8) +
+#  facet_wrap(~DISTRICT,nrow=3,scales="free")
+
+hotspot2 <- hotspot[which(hotspot$pfdens < 200000),]
+
+ggplot(hotspot2, aes(pfdens,F_MISS,color=platenum)) +
+  geom_point(size=0.8) +
+  facet_wrap(~DISTRICT,nrow=3,scales="free")
+
+#ggplot(hotspot2, aes(pfdens,F_MISS,color=DISTRICT)) +
+#  geom_point(size=0.8) +
+#  facet_wrap(~Capture.Plate.Name,nrow=3,scales="free")
+
+```
+
+<br />
+
+Show missingness by plate
+
+<br />
+
+```{r missplateDR}
+
+#metad2 <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
+
+vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_DRmip/analysis_vcf_format/variants.dr.fixed_miss.snps.no_controls.targets_only.recode.vcf", verbose=FALSE)
+
+dp <- extract.gt(vcf, element = "DP", as.numeric=TRUE)
+dp2 <- melt(dp)
+dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
+
+colnames(dp2) <- c("snp","sample_id","value","miss")
+dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+
+# finding which samples didn't even make it to the vcf file
+failed <- droplevels(dp3[which(is.na(dp3$snp)),])
+failed_samps <- failed$sample_id #vector of failed samples
+failed_samp <- as.data.frame(failed$sample_id) # dataframe of failed samples
+
+#adding them back in
+numsnps <- nrow(dp)
+numsamps <- nrow(failed_samp)
+missing_samps <- matrix( , nrow=numsnps, ncol=numsamps)
+colnames(missing_samps) <- failed_samps[1:numsamps]
+temp <- cbind(dp,missing_samps)
+
+#redo
+dp2 <- melt(temp)
+dp2$miss <- ifelse(is.na(dp2$value), "Yes", "No") 
+
+colnames(dp2) <- c("snp","sample_id","value","miss")
+dp3 <- merge(dp2,all_metad,by=c("sample_id"),all.y = TRUE)
+dp3$well <- as.numeric(substring(dp3$Capture.Plate.Location,2))
+dp3$row <- substr(dp3$Capture.Plate.Location,1,1)
+
+dp4 <- dp3[order(dp3$platenum, dp3$row, dp3$well),]
+
+ggplot(data = dp4, aes(x=Capture.Plate.Location, y=snp, fill=miss)) + 
+  geom_tile() +
+  scale_fill_manual(values=c("green","black"),name="", labels=c("Genotyped","Missing")) +
+  xlab("Sample, by Plate") + ylab("Target MIP") +
+  facet_grid(. ~ platenum, space="free_x", scales="free_x", switch="x") +
+  #labs(fill = "")
+  theme(
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank()
+    )
+  
+```
+
+<br />
+
+```{r missmodelDR}
+
+model <- lm(hotspot2$F_MISS ~ hotspot2$pfdens)
+summary(model)
+model2 <- lm(hotspot2$F_MISS ~ hotspot2$pfdens + hotspot2$platenum)
+summary(model2)
+
+```
+
+<br />
+
+## Overall
+
+<br />
+
+- Here's what we're left with if we exclude samples with > 90% missing data for 1800 MIP panel:
+
+```{r missregion1800}
+
+df <- all_metad1800 %>% 
+      group_by(DISTRICT) %>% 
+      summarise(count = sum(F_MISS < 0.9),
+                n = length(DISTRICT),
+                perc = sum(F_MISS < 0.9) / sum(n) * 100) 
+
+colnames(df) <- c("District","Kept","Total","%")
+
+df %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F)
+
+```
+
+<br />
+
+- .. and for the DR MIP panel:
+
+```{r missregionDR}
+
+df <- all_metadDR %>% 
+      group_by(DISTRICT) %>% 
+      summarise(count = sum(F_MISS < 0.9),
+                n = length(DISTRICT),
+                perc = sum(F_MISS < 0.9) / sum(n) * 100) 
+
+colnames(df) <- c("District","Kept","Total","%")
+
+df %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F)
+
+```
+
+<br />
+
+- Among the retained samples, some regions may still have higher amounts of missing genotypes tha nothers, which may be important to keep an eye on for certain popgen analyses with the 1800:
+
+```{r retmiss1800}
+
+df <- all_metad1800 %>% 
+      filter(F_MISS <= 0.9)
+      
+ggplot(df,aes(reorder(sample_id,F_MISS),F_MISS,fill=DISTRICT)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~ DISTRICT, scales="free") +
+  xlab("Samples, By District") +
+  ylab("Frequency of Missing Genotypes") +
+   theme(
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    #axis.text.y=element_blank(),
+    #axis.ticks.y=element_blank(),
+    legend.position = "none"
+    )
+  
+```
+
+- Nyanghwale unfortunately was pretty unsalvagable... consider removing from manuscript?
+
+<br />
