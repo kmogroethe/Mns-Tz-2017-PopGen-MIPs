@@ -6,6 +6,6 @@ navbar:
   - text: "Home"
     href: index.html
   - text: "Missingness"
-    href: 00-NIMR-TANZ-missingness.Rmd.html
+    href: 00-NIMR-TANZ-missingness.html
 output:
   html_document:
