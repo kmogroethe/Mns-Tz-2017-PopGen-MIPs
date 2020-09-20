@@ -1,0 +1,1169 @@
+---
+title: "NIMR Tanzania MIP Analysis - Population Structure"
+author: "kamoser"
+date: "2020-02-01"
+output: 
+  #prettydoc::html_pretty:
+    html_document:
+      toc: true
+      toc_float: true
+      toc_depth: 6
+    theme: spacelab
+    section_divs: yes
+#knit: (function(input_file, encoding) {
+#  out_dir <- '../docs';
+#  rmarkdown::render(input_file, encoding=encoding, output_file=file.path(dirname(input_file), out_dir, #'01-NIMR-TANZ-pop-strucutre.html'))})
+---
+
+```{r global option,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE,message=FALSE)
+#knitr::opts_knit$set(root.dir = "/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only")
+
+library(raster)
+
+.libPaths("/nas/longleaf/home/kamoser/bin/rlib/")
+
+library(stringr)
+library(vcfR)
+library(adegenet)
+library(tidyr)
+library(dplyr)
+library(naniar)
+library(plotly)
+library(reshape2)
+library(gridExtra)
+library(viridis)
+library(kableExtra)
+library(MIPanalyzer)
+library(maptools)
+library(tidytext)
+library(caTools)
+library(randomForest)
+library(randomForestExplainer)
+library(caret)
+library(rpart)
+library(ROCR)
+library(cowplot)
+library(ggpubr)
+
+# Read in necessary data sets for
+
+# 1800 MIP metad
+all_metad1800 <- read.table("/nas/longleaf/home/kamoser/daily/2009/tanzania_mip_analysis/metad_final/metad.txt",sep="\t",header=TRUE)
+levels(all_metad1800$DISTRICT)[levels(all_metad1800$DISTRICT) == "KIGOMA-UJIJI"] <- "KIGOMA"
+levels(all_metad1800$DISTRICT)[levels(all_metad1800$DISTRICT) == "MTWARA DC"] <- "MTWARA"
+
+```
+
+<br />
+
+## Overview
+
+<br />
+
+- 1,240 samples collected, captured, and sequenced from 13 locations across Tanzania
+  - I have sequencing data for 1,237 of these. Notes on plate maps that some samples were missing (?).
+- Genotyped using: 
+    - ~1800 MIP panel
+        - Targets 1,800 SNPs across the genome (combination of neutral and under selection)
+        - 3 total sequencing runs
+- 734 samples brought forward for poulation structure analysis
+
+<br />
+
+## Admixture Analysis
+
+<br />
+
+- Admixture analysis: Tested *K*=1 through 10
+    - 10 replicates for each *K*
+    - The rep with the highels log-likelihood value was chosen for each *K*
+    - That rep's cross-validation (CV) error was plotted to determine the *K* populations present in our data set
+
+```{r cv-error,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/admixture_v2")
+
+cv <- read.table("summary_cv-errors-from-highest-rep.txt", header=FALSE)
+
+plot(cv$V2,cv$V3,xlab=expression(italic("K")),ylab="CV Error",cex.axis=1.2,cex.lab=1.5,pch=19)
+
+```
+
+<br />
+
+- Pretty obvious answer of *K*=2 there.
+
+- For *K*=2, I plotted the proportion of each sample's genome that was assigned to eith er K1 or K2:
+
+<br />
+
+```{r admix,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/admixture_v1")
+
+q <- read.table("samples.plink.2.Q", header=TRUE)
+qlong <- melt(q, id.vars=c("sample_id"))
+merged <- merge(all_metad1800,qlong,by=c("sample_id"))
+
+merged$sample_id <- as.character(merged$sample_id)
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+msort <- merged[order(merged$DISTRICT,merged$variable,merged$value),]
+msort$sample <- as.factor(msort$sample)
+#msort$sample2 <- factor(msort$sample, levels = msort[order(msort$variable), "sample"])
+
+
+#msort %>%
+#  mutate(sample = reorder_within(sample, value, loc)) %>%
+ggplot(msort, aes(sample,value,fill=variable)) +
+  #geom_col() +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values = c("darkmagenta","darkturquoise")) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  facet_wrap(~loc,scales = "free_x") +
+  scale_x_reordered()
+
+```
+
+<br />
+
+Given the high amounts of missingess from some of the regions, I wanted to make sure that missingness doesn't predict a sample's assignment to one of the two populations. The below plot shows frequency of missing genotypes (y-axis) across samples (x-axis); each sample is colored by the proportion of the genome assigned to K2:
+
+```{r missstat}
+
+wide <- spread(msort,variable,value)
+wide$pop <- ifelse(wide$K2 > 0.50,2,1)
+
+ggplot(wide,aes(factor(sample),F_MISS)) +
+  #geom_point(aes(color = factor(pop))) +
+  geom_point(aes(color= K2)) +
+  ylab("Frequency of Missing Genotypes") +
+  xlab("Samples, by District") +
+  scale_fill_continuous(name = "Propotion of Genome Assigned to K2") +
+  #labs(fill = "Propotion of Genome Assigned to K2") +
+  facet_wrap(~loc,scales="free") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+```
+
+- I don't see any relationship between missingness, location, and K assignment.
+
+<br />
+
+## PCA-based Analyses
+
+- We also did PCA and PCoA analyses shown below.
+
+```{r pcoa}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/")
+
+# MAKE PCOA
+
+vcf <- read.vcfR("variants.fixed_genos.no_controls.snps.targets_only.site90.indv90.recode.wsaf.majorallele.no-nyanghwale.recode.vcf", verbose=FALSE)
+
+#targets <- read.table("/nas/longleaf/home/kamoser/daily/1902/tanzania_mip_analysis/target_snps.tsv",header=TRUE)
+
+#metad <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_DRmip/datasets_for_2018-12-17_meeting/metadata/all_metadata_header.txt", head=TRUE, sep="\t")
+
+invisible(x <- vcfR2genlight(vcf))
+
+m <- as.matrix(dist(x))
+pcoa <- cmdscale(m, eig=TRUE, k=10)
+test <- data.frame(points=as.matrix(pcoa$points[,1:3]))
+test$sample_id <- rownames(test)
+merged <- merge(test, all_metad1800,by="sample_id")
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+pcoa$merged <- merged
+
+# MAKE PCA
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/")
+
+d <- read.table("variants.fixed_genos.no_controls.snps.targets_only.site90.indv90.recode.wsaf.majorallele.no-nyanghwale.for_pca", header=TRUE,stringsAsFactors=FALSE)
+
+d$snp <- paste(d$CHROM, d$POS, sep = "_")
+d2 <- d[,10:ncol(d)]
+d3 <- dcast(melt(d2), variable~snp)
+d3[d3 == -1] <- NA
+
+for(i in 2:ncol(d3)){
+  d3[is.na(d3[,i]), i] <- mean(d3[,i], na.rm = TRUE)
+}
+
+rnames <- d3[,1]
+d4 <- data.matrix(d3[,2:1615])
+rownames(d4) <- rnames
+pca <- prcomp(d4)
+d5 <- data.frame(points=as.matrix(pca$x[,1:3]))
+d5$sample_id <- rownames(d5)
+d5$sample_id <- gsub("\\.","-",d5$sample_id)
+d5$sample_id <- gsub("^X","",d5$sample_id)
+merged <- merge(d5, all_metad1800,by="sample_id")
+#merged <- merge(test, metad,by="sample_id")
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+pca$merged <- merged
+
+# MAKE PLOTS
+
+plot_ly(as.data.frame(pcoa$points[,1:3]), x = ~pcoa$points[,1],
+                 y = ~pcoa$points[,2],
+                 z = ~pcoa$points[,3],
+                color = pcoa$merged[,"loc"],
+                 type = "scatter3d", colors=viridis_pal(option="D")(13),
+                 mode = "markers", marker = list(size = 5))
+#pcoa2 <- plot_ly(as.data.frame(pcoa$x[, 1:3]), x = ~PC1, y = ~PC2, 
+#                 z = ~PC3,color = pca$dat[, meta_var], 
+#                 type = "scatter3d", colors = col_vec,
+#                 mode = "markers", marker = list(size = 3))
+
+x <- list(title="PC1",size=18,color="black")
+y <- list(title="PC2",size=18,color="black")
+z <- list(title="PC3",size=18,color="black")
+
+pc <- as.data.frame(pca$x[,1:3])
+
+plot_ly(as.data.frame(pca$x[, 1:3]), x = ~PC1, y = ~PC2, 
+        z = ~PC3,color = pca$merged[, "loc"], 
+        type = "scatter3d",colors=viridis_pal(option="D")(12),
+        mode = "markers", marker = list(size = 5)) %>%
+  layout(scene=list(xaxis=x,yaxis=y, zaxis=z)) %>%
+  layout(legend = list(orientation = "r",xanchor="center"))
+
+#pca2 <- plot_ly(as.data.frame(pca$x[, 1:3]), x = ~PC1, y = ~PC2, 
+#                z = ~PC3,color = pca$dat[, meta_var], 
+#                type = "scatter3d", colors = col_vec,
+#                mode = "markers", marker = list(size = 3))
+
+```
+
+</br >
+
+- Both show a gradient of separation between southern districts and districts in the north and northwest, with samples from Kibaha sort of spanning this gradient
+  - **To see this better, click on Kibaha in the legends above to remove it from the figure)**
+
+</br >
+
+- To summarise:
+    - We do identify two main populations (K1 and K2) in our data set, with the northern regions being more admixed than the southern regions
+    - However, population structure is probably best represented as a continious graident (as per the unsupervised PCoA/PCA approaches). 
+
+<br />
+
+- I also tried k-means clustering, which gives very similar results to the above admixture plot.
+- I also tried discrimitory analysis of principle componants (DAPC) to see if we could get any more discrimination by district. 
+  - After some testing, I included ~140 compents in the DAPC, and we do see some additional separation by district.
+  - Additional spread among the north and north-western distrcits. 
+  - NOTE for html: not rendered due to run time; code found in Rmarkdown document
+
+```{r kmeans, echo=FALSE, eval=FALSE}
+
+vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.no_controls.snps.targets_only.site90.indv90.recode.wsaf.majorallele.no-nyanghwale.recode.vcf",verbose=FALSE)
+
+# Reading in data and assinging population information
+invisible(x <- vcfR2genlight(vcfSNP))
+#gt <- extract.gt(vcf, element = "GT")
+sample_names <- as.data.frame(x$ind.names)
+colnames(sample_names)<-c("sample_id")
+n_occur <- data.frame(table(sample_names$sample_id))
+sample_meta <- merge(sample_names,all_metad1800,by=c("sample_id"),all.x=TRUE)
+pop(x) <- as.factor(sample_meta$DISTRICT)
+
+# Read in map data
+tanz <- getData("GADM", country="TZ", level=0)
+latitude = c(-2.583333,-2.633333,-4.448056,-4.883333,
+             -5.103611,-9.625,-11.35658,-11,-10.717,-11.05269,-10.273611,-6.766667)
+longitude = c(32.916667,31.766667,29.924167,29.633333,30.391111,33.875,
+              34.86847,37.5,38.8,38.5976,40.182778,38.916667)
+points <- as.data.frame(cbind(latitude,longitude))
+
+# How many PC's from a PCA should we retain? 
+#the exact number may fluxuate from run to run if you don't use a seed
+set.seed(999)
+pramx <- xvalDapc(tab(x, NA.method = "mean"), pop(x),n.rep=100,parallel="multicore",ncpus=3,xval.plot = TRUE)
+
+dapc <- dapc(x, var.contrib = TRUE, scale = FALSE, n.pca = 750, n.da=12)
+temp <- optim.a.score(dapc) 
+
+#Keeping 106 PC's and making the dapc plot 
+dapc <- dapc(x, var.contrib = TRUE, scale = FALSE, n.pca = 106, n.da = 12)
+
+tiff("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/figure2_2020-02-06.tiff", width = 7.83, height = 6.07, units = 'in', res = 300)
+
+scatter(dapc, cell = 0, cstar = 0, clab=0.75,mstree = TRUE, lwd = 2, lty = 2,
+        scree.pca=FALSE, posi.pca="topright",posi.leg="topright", scree.da=FALSE,grid=FALSE,addaxes=FALSE,
+        col=c("#433E85FF",  "#482173FF",    "#440154FF",  "#FDE725FF",   "#2D708EFF",   "#1E9B8AFF",    "#C2DF23FF",   "#FDE725FF", "#85D54AFF", "#2BB07FFF",  "#51C56AFF",  "#25858EFF"))
+# [1] "BUHIGWE"  "CHATO"    "ILEMELA"  "KIBAHA"   "KIGOMA"   "KYELA"    "MASASI"   "MTWARA"  
+# [9] "NANYUMBU" "NYASA"    "TUNDURU"  "UVINZA" 
+# [1] "#433E85FF"  "#482173FF"    "#440154FF"  "#FDE725FF"   "#2D708EFF"   "#1E9B8AFF"    "#C2DF23FF"   "#FDE725FF" "#85D54AFF" "#2BB07FFF"  "#51C56AFF"  "#25858EFF"
+myInset <- function() {
+  plot(tanz)
+  points(points$longitude,points$latitude,pch=21,cex=1.5, col="black", bg=viridis(12))
+}
+add.scatter(myInset(), posi="topleft",ratio=0.19,inset = c(0.000001,0.0000001))
+
+dev.off()
+
+image = readImage("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/figure2_2020-02-06.tiff")
+dim(image)
+image2 = cropImage(image,new_width = 1800, new_height=2329, type = 'equal_spaced')
+writeImage(image2, file_name ="/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/figure2_2020-02-06_cropped.tiff")
+
+```
+
+<br />
+
+## Variants Contributing to PCA-based methods
+
+- Moving forward with probably use PCA's so we can utilizing the loading componants
+    - Below shows the contribution of the loading value to componants one and two, expressed as a percent:
+
+<br />
+
+```{r loadings, echo=FALSE, warnings = FALSE, dpi = 200}
+
+targets <- read.table("/nas/longleaf/home/kamoser/daily/1902/tanzania_mip_analysis/target_snps.tsv",header=TRUE,stringsAsFactors = FALSE)
+
+# Low amounts of variation explained by first 3 componants
+eigenvalues <- pca$sdev^2
+eigenvalues[1] / sum(eigenvalues)
+eigenvalues[2] / sum(eigenvalues)
+eigenvalues[3] / sum(eigenvalues)
+
+positions <- row.names(pca$rotation)
+pca$contribution <- abs(pca$rotation)
+pca$contribution <- sweep(pca$contribution, 2, colSums(pca$contribution), "/") *100
+
+c1 <- as.data.frame(pca$contribution[,1])
+c1$coord <- positions
+c1 <- separate(c1, "coord", c("chrom","POS"),
+         sep="_", remove=F)
+c1$CHROM <- as.numeric(gsub("chr","",c1$chrom))
+c1$POS <- as.numeric(c1$POS)
+c2 <- as.data.frame(pca$contribution[,2])
+c2$coord <- positions
+c2 <- separate(c2, "coord", c("chrom","POS"),
+         sep="_", remove=F)
+c2$CHROM <- as.numeric(gsub("chr","",c2$chrom))
+c2$POS <- as.numeric(c2$POS)
+c3 <- as.data.frame(pca$contribution[,3])
+c3$coord <- positions
+c3 <- separate(c3, "coord", c("chrom","POS"),
+         sep="_", remove=F)
+c3$CHROM <- as.numeric(gsub("chr","",c3$chrom))
+c3$POS <- as.numeric(c3$POS)
+comp1 <- merge(c1,targets, by=c("chrom","POS"))
+comp2 <- merge(c2,targets, by=c("chrom","POS"))
+comp3 <- merge(c3,targets, by=c("chrom","POS"))
+comp1$CHROM <- as.factor(comp1$CHROM)
+comp2$CHROM <- as.factor(comp2$CHROM)
+comp3$CHROM <- as.factor(comp3$CHROM)
+
+#define 3D7 chromosome size and order so ggrec can draw
+chrom_sizes <- structure(list(V1 = c(1, 2, 3,
+                                    4, 5, 6,
+                                    7, 8, 9,
+                                    10, 11, 12,
+                                    13, 14),
+                              V2 = c(640851L, 947102L, 1067971L, 1200490L,
+                                     1343557L, 1418242L, 1445207L, 1472805L,
+                                     1541735L, 1687656L, 2038340L, 2271494L,
+                                     2925236L, 3291936L)),
+                         .Names = c("V1", "V2"), class = "data.frame",
+                         row.names = c(NA, -14L))
+
+colnames(chrom_sizes) <- c("CHROM", "size")
+
+chrom_order <- c(1, 2, 3,
+                                    4, 5, 6,
+                                    7, 8, 9,
+                                    10, 11, 12,
+                                    13, 14)
+chrom_key <- setNames(object = as.character(c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 
+                                              12, 13, 14)), nm = chrom_order)
+chrom_order <- factor(x = chrom_order, levels = rev(chrom_order))
+
+# convert the chromosome column in each dataset to the ordered factor
+chrom_sizes[["CHROM"]] <- factor(x = chrom_sizes[["CHROM"]],
+                                      levels = chrom_order)
+d[["CHROM"]] <- factor(x = d[["CHROM"]],
+                                levels = chrom_order)
+
+#PLOT PC1
+pc1 <- ggplot(data = chrom_sizes) + facet_wrap(~CHROM, ncol = 1) +
+  theme(strip.background = element_blank(),
+                         strip.text.x = element_blank(),
+                         panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         panel.background = element_blank()) +
+  geom_rect(aes(xmin = 0,
+                xmax = size,
+                ymax = 0, 
+                ymin = 0),
+            colour="black") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size=2)) +
+  xlab("Chromosomes") + ylab("% Contribution to PC1") +
+  geom_segment(data = comp1, aes(y = 0 ,
+                              yend = `pca$contribution[, 1]`,
+                              x = POS, xend=POS, color=Geo)) +
+   theme(legend.position="none",
+         axis.title.x=element_blank())
+
+  ann_text <- data.frame(x=c(560000,821000,1060000),y=c(1.0,1,0.95),
+                         label=c("pfacs8","PF3D7_0220300","PF3D7_1127000"), 
+                         CHROM=factor(c(2,2,11)))
+  pc11 <- pc1 + geom_text(data=ann_text,mapping=aes(x=x,y=y,label=label),size=2)
+
+#PLOT PC2  
+pc2 <-ggplot(data = chrom_sizes) + facet_wrap(~CHROM, ncol = 1) +
+  theme(strip.background = element_blank(),
+                         strip.text.x = element_blank(),
+                         panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         panel.background = element_blank()) +
+  geom_rect(aes(xmin = 0,
+                xmax = size,
+                ymax = 0, 
+                ymin = 0),
+            colour="black") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size=2)) +
+  xlab("Chromosomes") + ylab("% Contribution to PC2") +
+  geom_segment(data = comp2, aes(y = 0 ,
+                              yend = `pca$contribution[, 2]`,
+                              x = POS, xend=POS, color=Geo)) +
+   theme(legend.position="none",
+         axis.title.x=element_blank())
+
+  ann_text <- data.frame(x=c(557000),y=c(0.7), label=c("dhps"), 
+                         CHROM=factor(c(8)))
+  pc22 <- pc2 + geom_text(data=ann_text,mapping=aes(x=x,y=y,label=label),size=2)
+
+#PLOT PC3 
+pc3 <- ggplot(data = chrom_sizes) + facet_wrap(~CHROM, ncol = 1) +
+  theme(strip.background = element_blank(),
+                         strip.text.x = element_blank(),
+                         panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         panel.background = element_blank()) +
+  geom_rect(aes(xmin = 0,
+                xmax = size,
+                ymax = 0, 
+                ymin = 0),
+            colour="black") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size=2)) +
+  xlab("Chromosomes") + ylab("% Contribution to PC3") +
+  geom_segment(data = comp3, aes(y = 0 ,
+                              yend = `pca$contribution[, 3]`,
+                              x = POS, xend=POS, color=Geo)) +
+  #geom_segment(data = dr, aes(y=0, yend=0.75, x=POS,xend=POS,color="black"))
+  #annotate("text",x=500,y=0.5,label="boat")
+  theme(legend.position="none")
+  #scale_color_discrete(name = "Coding")
+
+  dr <- rbind.data.frame(c("dhps","chr8",548200,550616),c("crt","chr7",403222,406317))
+  colnames(dr) <- c("gene","CHROM","POS","POS2")
+  dr$POS <- as.numeric(dr$POS)
+  
+  ann_text <- data.frame(x=c(403000,549000),y=c(0.7,0.7), label=c("pfcrt","dhps"), 
+                         CHROM=factor(c(7,8)))
+  pc33 <- pc3 + geom_text(data=ann_text,mapping=aes(x=x,y=y,label=label),size=2)
+
+#plot_grid(pc11,pc22,pc33,nrow=3,labels=c("","",""))
+
+pc11
+pc22
+pc33
+  
+```
+
+<br />
+
+- Overall, individual contributions to each componant are small
+
+-Regions of interest on:
+    - PC1: Two hits on chrm2 () and one on chrm11
+    - PC2: Region upstream of *dhps* on chrm 8 and *aat1* on chrm 6 
+    - PC3: *dhps*, *crt*
+
+<br />
+
+- The hits on chromosome 2 and 11 for PC1 match really well with the K =2 populations we identified in the admixture analysis
+
+```{r freqs, dpi = 200, fig.width=8}
+
+# Create genlight object from vcf file
+gt <- extract.gt(vcf, element = "GT")
+fix <- as.data.frame(vcf@fix)
+fix$vkey <- paste(fix$CHROM,fix$POS,".",fix$REF,fix$ALT,sep=":")
+geno <- vcf@gt
+geno2 <- geno[1:nrow(geno),2:ncol(geno)]
+vkey <- as.data.frame(fix[,9])
+geno3 <- cbind(vkey,geno2)
+colnames(geno3)[1] <- "vkey"
+
+# wide to long, recode genotype
+gtlong <- melt(as.matrix(gt))
+colnames(gtlong) <- c("snp","sample_id","geno")
+genolong <-melt(geno3,id=c("vkey"))
+colnames(genolong) <- c("vkey","sample_id","geno")
+
+#merge datasets
+m1 <- merge(fix,genolong,by=c("vkey"))
+
+#get all this allele depth stuff sorted out
+m1$adepth <- sapply(strsplit(m1$geno, ":"), "[", 2)
+m1$depth <- sapply(strsplit(m1$geno, ":"), "[", 3)
+m1$adepth <- ifelse(m1$adepth == ".", ".,.", m1$adepth)
+m1$altd <- sapply(strsplit(m1$adepth, ","), "[", 2)
+m1$refd <- sapply(strsplit(m1$adepth, ","), "[", 1)
+m2 <- m1%>%
+  mutate(altd = ifelse(altd < 2, 0, altd),
+         altd = na_if(altd, "."),
+         refd = na_if(refd, "."),
+         depth = na_if(depth,"."),
+         wsaf = as.numeric(altd) / as.numeric(depth),
+         alt = ifelse(wsaf < 0.01, 0, 1))
+
+# Merge metad
+m3 <- merge(all_metad1800,m2,by=c("sample_id"),all.y=TRUE)
+m4 <- m3 %>%
+  select(vkey,CHROM,POS,REF,ALT,sample_id,depth,refd,altd,wsaf,alt,
+         DISTRICT,REGION) %>%
+  filter(!is.na(DISTRICT))
+
+#read in calls
+
+calls <- read.csv("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_DRmip/from_oz_1904/variants.csv",head=TRUE)
+
+# merge annotation information
+c2 <- calls %>%
+  select(VKEY,Gene,Mutation.Name,Targeted) %>%
+  distinct()
+colnames(c2)[1] <- "vkey"
+
+haps <- calls %>%
+  select(VKEY,Sample.ID,Haplotype.ID,Gene,Mutation.Name,Targeted)
+colnames(haps)[1:2] <- c("vkey","sample_id")
+
+#m5 <- merge(m4,c2,by=c("vkey"))
+
+m5 <- m4 %>%
+  select(DISTRICT,sample_id,vkey,alt) %>%
+  filter(vkey == "chr8:550117:.:C:G")
+
+library(plyr)
+summary <- ddply(m4, c("DISTRICT", "vkey"), summarise,
+                 N     = length(alt),
+                 nmiss = sum(!is.na(alt)),
+                 count = sum(alt,na.rm=T),
+                 perc  = count / nmiss )
+
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/admixture_v2")
+
+q <- read.table("samples.plink.2.Q", header=TRUE)
+qlong <- melt(q, id.vars=c("sample_id"))
+merged <- merge(all_metad1800,qlong,by=c("sample_id"))
+
+merged$sample_id <- as.character(merged$sample_id)
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+msort <- merged[order(merged$DISTRICT,merged$variable,merged$value),]
+msort$sample <- as.factor(msort$sample_id)
+#msort$sample2 <- factor(msort$sample, levels = msort[order(msort$variable), "sample"])
+
+admix <- ggplot(msort,aes(sample,value,fill=variable)) +
+  geom_bar(stat="identity") +
+  labs(x="",y=expression("Proportion of Genome Assigned to"~italic(K))) +
+  guides(fill=FALSE) +
+  scale_fill_manual(values = c("darkmagenta","darkturquoise")) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  facet_wrap(loc ~ .,scales = "free") 
+
+# make plots for individual snps
+ 
+q2 <- q %>%
+  mutate(pop = ifelse(K1 > K2, 1, 2),
+         pop2 = ifelse( abs(K1 - K2) < 0.20, 3, pop))
+
+
+q3 <- merge(m4,q2,by=c("sample_id"))
+
+q3$loc[q3$DISTRICT == "ILEMELA"] <- "01"
+q3$loc[q3$DISTRICT == "CHATO"] <- "02"
+q3$loc[q3$DISTRICT == "NYANGHWALE"] <- "03"
+q3$loc[q3$DISTRICT == "BUHIGWE"] <- "04"
+q3$loc[q3$DISTRICT == "KIGOMA"] <- "05"
+q3$loc[q3$DISTRICT == "UVINZA"] <- "06"
+q3$loc[q3$DISTRICT == "KYELA"] <- "07"
+q3$loc[q3$DISTRICT == "NYASA"] <- "08"
+q3$loc[q3$DISTRICT == "TUNDURU"] <- "09"
+q3$loc[q3$DISTRICT == "NANYUMBU"] <- "10"
+q3$loc[q3$DISTRICT == "MASASI"] <- "11"
+q3$loc[q3$DISTRICT == "MTWARA"] <- "12"
+q3$loc[q3$DISTRICT == "KIBAHA"] <- "13"
+q3$loc <- factor(q3$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","NANYUMBU","MASASI","MTWARA","KIBAHA"))
+
+#make plot for PF3D7_0215300 C438F
+
+q4 <- q3 %>%
+  filter(vkey == "chr2:631190:.:T:A") # Y40F
+  #https://plasmodb.org/plasmo/app/record/snp/NGS_SNP.Pf3D7_02_v3.631190
+  #filter(vkey == "chr2:629996:.:C:A") # old pfacs8-C438F
+
+summary <- ddply(q4, c("loc","pop"), summarise,
+                 N     = length(alt),
+                 nmiss = sum(!is.na(alt)),
+                 count = sum(alt,na.rm=T),
+                 perc  = count / nmiss )
+
+s1 <- summary %>%
+  select(pop,perc,loc) %>%
+  mutate(perc = ifelse(perc == 0, NA, perc)) %>%
+  mutate(pop2 = ifelse(pop == 1, 1, ifelse(pop == 2, 3, 2)))
+
+cF40Y <- ggplot(s1,aes(loc,as.factor(pop))) + 
+  geom_point(aes(size=perc, color=as.factor(pop))) +
+  scale_size(range = c(0, 10)) + 
+  scale_color_manual(values = c("darkmagenta","darkturquoise")) +
+  ylab("") + xlab("") + ggtitle(expression(paste(italic("pfacs8"),"-F40Y (Chromosome 2: 631,190)"))) +
+  guides(color=FALSE,size=guide_legend(title="Frequency")) + 
+  scale_y_discrete(labels=c("K1","K2")) +
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,color=viridis_pal(option="D")(12)),
+        #axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.background = element_rect(),
+        legend.key=element_blank(),
+        plot.title = element_text(hjust = 0.5,vjust=-3)) 
+
+#make figure of PF3D7_0220300-D60N
+
+q4 <- q3 %>%
+  filter(vkey == "chr2:814288:.:C:T")
+  #https://plasmodb.org/plasmo/app/record/snp/NGS_SNP.Pf3D7_02_v3.814288
+
+summary <- ddply(q4, c("loc","pop"), summarise,
+                 N     = length(alt),
+                 nmiss = sum(!is.na(alt)),
+                 count = sum(alt,na.rm=T),
+                 perc  = count / nmiss )
+
+s1 <- summary %>%
+  select(pop,perc,loc) %>%
+  mutate(perc = ifelse(perc == 0, NA, perc),
+         pop2 = ifelse(pop == 1, 1, ifelse(pop == 2, 3, 2)))
+
+D60N <- ggplot(s1,aes(loc,as.factor(pop))) + 
+  geom_point(aes(size=perc, color=as.factor(pop))) +
+  scale_size(range = c(0, 10)) + 
+  scale_color_manual(values = c("darkmagenta","darkturquoise")) +
+  ylab("") + xlab("") + ggtitle("PF3D7_0220300-D60N (Chromosome 2: 814,288)") +
+  guides(color=FALSE,size=guide_legend(title="Frequency")) + 
+  scale_y_discrete(labels=c("K1","K2")) +
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,color=viridis_pal(option="D")(12)),
+        #axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.background = element_rect(),
+        legend.key=element_blank(),
+        plot.title = element_text(hjust = 0.5,vjust=-3)) 
+
+#make figure for PF3D7_1127000-K76E
+
+q4 <- q3 %>%
+  filter(vkey == "chr11:1057437:.:T:C")
+  # https://plasmodb.org/plasmo/app/record/snp/NGS_SNP.Pf3D7_11_v3.1057437
+
+summary <- ddply(q4, c("loc","pop"), summarise,
+                 N     = length(alt),
+                 nmiss = sum(!is.na(alt)),
+                 count = sum(alt,na.rm=T),
+                 perc  = count / nmiss )
+
+s1 <- summary %>%
+  select(pop,perc,loc) %>%
+  mutate(perc = ifelse(perc == 0, NA, perc),
+         pop2 = ifelse(pop == 1, 1, ifelse(pop == 2, 3, 2)))
+
+K76E <- ggplot(s1,aes(loc,as.factor(pop))) + 
+  geom_point(aes(size=perc, color=as.factor(pop))) +
+  scale_size(range = c(0, 10)) + 
+  scale_color_manual(values = c("darkmagenta","darkturquoise")) +
+  ylab("") + xlab("") + ggtitle("PF3D7_1127000-K76E (Chromosome 11: 1,057,437)") +
+  guides(color=FALSE,size=guide_legend(title="Frequency")) + 
+  scale_y_discrete(labels=c("K1","K2")) +
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,color=viridis_pal(option="D")(12)),
+        #axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.background = element_rect(),
+        legend.key=element_blank(),
+        plot.title = element_text(hjust = 0.5,vjust=-3)) 
+
+#make combined figure 2
+
+figure2 <- ggarrange(admix, labels=c("A"),
+          ggarrange(cF40Y, D60N, K76E,
+          labels= c("B"),
+          ncol=1,nrow=3))
+
+cF40Y
+D60N
+K76E
+
+```
+<br />
+
+## Random Forest
+
+<br />
+
+- Using PCA-based approaches, we identified cerrtain SNPs that papeared to be correlating with geography
+- Using more formal machine learning approaches (ie random forest), can we identify additional SNPs? Or, confirm that the same SNPs come up?
+
+<br />
+
+- Started with the data set from the PCA data
+    - Imputed WSAF to remove missing sites
+    - Called major allele
+- Used the `randomForest` package to conduct supervised machine learning
+    - Tested categorization method for North/South (Kibaha removed)
+    - Tested categorization method for K1/K2
+    - Tested regression method for % of genome in K1/K2
+
+</br >
+
+- Here's the results of the RF model for categrozing North/South samples:
+
+```{r RFgeo}
+
+#Random Forests analyses (31) were done using the ran-domForest package (32) of R. A total of 1,031 variables were tried at eachsplit, with 10,000 trees in the forest. The importance of each SNP in pre-dicting the clearance phenotypes (treated as continuous variables) was assessed based on the percent increase in mean-squared error
+
+# Call major allele
+d4 <- apply(d3[-1], MARGIN=2, function(x) {ifelse(x >= 0.50, 1, 0)})
+
+rnames <- d3[,1]
+d4 <- d3[,2:ncol(d3)]
+d5 <- as.data.frame(apply(d4, MARGIN=2, function(x) {ifelse(x >= 0.50, 1, 0)}))
+d5$sample_id <- rnames
+d5$sample_id <- gsub("\\.","-",d5$sample_id)
+d5$sample_id <- gsub("^X","",d5$sample_id)
+
+merged <- merge(d5, all_metad1800,by="sample_id")
+#merged <- merge(test, metad,by="sample_id")
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+merged$loc2[merged$DISTRICT == "ILEMELA"] <- "North"
+merged$loc2[merged$DISTRICT == "CHATO"] <- "North"
+merged$loc2[merged$DISTRICT == "NYANGHWALE"] <- "North"
+merged$loc2[merged$DISTRICT == "BUHIGWE"] <- "North"
+merged$loc2[merged$DISTRICT == "KIGOMA-UJIJI"] <- "North"
+merged$loc2[merged$DISTRICT == "UVINZA"] <- "North"
+merged$loc2[merged$DISTRICT == "KYELA"] <- "South"
+merged$loc2[merged$DISTRICT == "NYASA"] <- "South"
+merged$loc2[merged$DISTRICT == "TUNDURU"] <- "South"
+merged$loc2[merged$DISTRICT == "MASASI"] <- "South"
+merged$loc2[merged$DISTRICT == "NANYUMBU"] <- "South"
+merged$loc2[merged$DISTRICT == "MTWARA DC"] <- "South"
+merged$loc2[merged$DISTRICT == "KIBAHA"] <- "South"
+
+#create training and test data set, using random forest package
+
+d6 <- merged %>%
+  mutate(loc2 = as.factor(loc2)) %>%
+  filter(loc != "KIBAHA" ) %>%
+  select(starts_with("chr"), loc2) #change last variable to desired outcome
+
+sample = sample.split(d6$loc2, SplitRatio = .75)
+train = subset(d6,sample == TRUE)
+test = subset(d6,sample == FALSE)
+
+# first random forest model on train
+set.seed(1)
+model1 <- randomForest(loc2 ~., data=train, importance=TRUE, ntree=10000, mtry=200, proximity=TRUE, type=classification)
+
+model1.training.data <- model1
+model1.training.data
+
+predictions.test.data = predict(model1, newdata=test[-1615])
+cm = table(test[,1615], predictions.test.data) 
+cm
+
+#roc(train$loc2,model1.training.data$votes[,2])
+
+prediction_for_roc_curve <- predict(model1.training.data, test,type="prob")
+classes <- levels(test$loc2)
+
+#for north
+  true_values <- ifelse(test$loc2=="North",1,0)
+  pred <- prediction(prediction_for_roc_curve[,1],true_values)
+  perf <- performance(pred, "tpr", "fpr")
+  plot(perf,main="ROC Curve") 
+  auc.perf <- performance(pred, measure = "auc")
+  print(auc.perf@y.values)
+  
+plot(perf,main="ROC Curve", col="blue", lwd=2)
+text(0.7,0.2, labels="Region Classification AUC: 0.896",cex=2, col="blue")
+
+```
+
+- Looks like the model is sucks at putting things correctly into the northern category
+- We can slightly improve this by adjusting the rf paramaters, but it's nothing to write home about
+
+- Here are the SNPs associated with the north/south divide, as well as some QC: 
+
+```{r imp1}
+
+varImpPlot(model1)
+
+plot(model1, log="y")
+
+#imp <- as.data.frame(model1$importance)
+#imp$SNP <- rownames(imp)
+#imp <- imp[order(imp$MeanDecreaseAccuracy),]
+#dotchart(imp$MeanDecreaseAccuracy, labels=imp$SNP, ces=0.7, 
+#         ylab="", xlab="Mean Decrease in Accuracy", main="All SNPs, Ranked")
+
+#imp2 <- imp[which(imp$MeanDecreaseAccuracy >= 0.001),]
+#dotchart(imp2$MeanDecreaseAccuracy, labels=imp2$SNP, ces=0.7,
+#         ylab="", xlab="Mean Decrease in Accuracy", main="Top SNPs")
+
+```
+
+- The top hits in chr 2 are in the acytl coa gene that was also identified from the loading componants of our PCA (as well as Bob's anlaysis from the DRC data)
+- You can see by the x-axis that, like the PCA loading values, these SNPs contribute individually very small amounts to the overal model (or, how much would the model decrease in accuracy if you removed that SNP from the model?)
+
+<br />
+
+- Does the model do better when attempting to categorize by K1 or K2?
+
+```{r rfadmix}
+#Can we predict admixture better?
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/admixture_v1")
+
+q <- read.table("samples.plink.2.Q", header=TRUE)
+
+merged2 <- merge(merged,q,by=c("sample_id"))
+
+d6 <- merged2 %>%
+  mutate(pop = as.factor(ifelse(K1 >= 0.5, 1, 0))) %>%
+         #pop2 = as.factor(pop)) %>%
+  select(starts_with("chr"), pop)
+
+sample = sample.split(d6$pop, SplitRatio = .75)
+train = subset(d6,sample == TRUE)
+test = subset(d6,sample == FALSE)
+
+set.seed(1)
+model2 <- randomForest(pop ~., data=train, importance=TRUE, ntree=10000, mtry=200, type=classification)
+
+model2.training.data <- model2
+model2.training.data
+
+prediction.test.data = predict(model2, newdata=test[-1615])
+cm = table(test[,1615], prediction.test.data) # looks like South cat is good, North not so much (makes sense with admixture)
+cm
+
+prediction_for_roc_curve <- predict(model2.training.data, test, type="prob")
+classes <- levels(test$loc2)
+
+#for north
+  true_values <- ifelse(test$pop=="1",1,0)
+  pred <- prediction(prediction_for_roc_curve[,2],true_values)
+  perf2 <- performance(pred, "tpr", "fpr")
+  plot(perf2,main="ROC Curve") 
+  auc.perf <- performance(pred, measure = "auc")
+  print(auc.perf@y.values)
+  
+plot(perf2,main="ROC Curve", col="red", lwd=2)
+text(0.7,0.2, labels="K Classification AUC: 0.94", col="red",cex=2)
+
+#text(0.7,0.125, labels="K2 AUC: 0.94", col="blue",cex=2)
+
+```
+
+- better.... below are the SNPs and check sthat we ran enough trees
+
+```{r imp2}
+
+varImpPlot(model2)
+
+plot(model2, log="y")
+
+#imp <- as.data.frame(model2$importance)
+#imp$SNP <- rownames(imp)
+#imp <- imp[order(imp$MeanDecreaseAccuracy),]
+#dotchart(imp$MeanDecreaseAccuracy, labels=imp$SNP, ces=0.7,
+#         ylab="SNPs", xlab="Mean Decrease in Accuracy", main="All SNPs, Ranked")
+
+#imp2 <- imp[which(imp$MeanDecreaseAccuracy >= 0.001),]
+#dotchart(imp2$MeanDecreaseAccuracy, labels=imp2$SNP, ces=0.7,
+#         ylab="SNPs", xlab="Mean Decrease in Accuracy", main="Top SNPs")
+
+```
+
+- Similar overlap in SNPs
+
+<br />
+
+- Making final figure for the above models
+
+```{r finalpic, fig.height=16}
+
+#making panel a
+layout(matrix(c(1,1,2,3), nrow=2, byrow=FALSE))
+
+par(cex=1)
+plot(perf,main="ROC Curve", col="blue", lwd=2,cex.main=2,cex.lab=1.5, cex.axis=1.5)
+text(0.6,0.2, labels="Geographic Classification AUC: 0.871", col="blue",cex=2)
+plot(perf2,main="ROC Curve", col="red", lwd=2, cex.main=2, add=TRUE,cex.lab=1.5, cex.axis=1.5)
+text(0.5,0.125, labels="K Classification AUC: 0.961", col="red",cex=2)
+
+
+# making panel b
+imp <- as.data.frame(model1$importance)
+imp$SNP <- rownames(imp)
+imp <- imp[which(imp$MeanDecreaseAccuracy >= 0.001),]
+imp <- imp[order(-imp$MeanDecreaseAccuracy),]
+imp2 <- imp[1:15,]
+imp2 <- imp2[order(imp2$MeanDecreaseAccuracy),]
+
+par(cex=1)
+dotchart(imp2$MeanDecreaseAccuracy, labels=imp2$SNP,cex.main=2,cex.lab=1.5, cex.axis=1.5,
+         ylab=, xlab="Mean Decrease in Accuracy", main="Top SNPs (Geography Classification)")
+
+#making panel c
+imp <- as.data.frame(model2$importance)
+imp$SNP <- rownames(imp)
+#imp <- imp[which(imp$MeanDecreaseAccuracy >= 0.0001),]
+imp <- imp[order(-imp$MeanDecreaseAccuracy),]
+imp2 <- imp[1:15,]
+imp2 <- imp2[order(imp2$MeanDecreaseAccuracy),]
+
+par(cex=1)
+dotchart(imp2$MeanDecreaseAccuracy, labels=imp2$SNP,cex.main=2,cex.lab=1.5, cex.axis=1.5,
+         ylab="", xlab="Mean Decrease in Accuracy", main="Top SNPs(K Classification)")
+
+#dev.off()
+
+```
+
+<br />
+
+- NOTE: not sure seeds are working, results from re-running notebook may look slightly different from Moser et al. 
+- TO DO: fix seed issue
+## Some additional checks
+
+- How about treating K as a continious variable (so using regression instead of classification):
+
+```{r rfKcont}
+# how a out treating it as a continious variable? starting with K1
+
+d6 <- merged2 %>%
+  select(starts_with("chr"), K1)
+
+sample = sample.split(d6$K1, SplitRatio = .75)
+train = subset(d6,sample == TRUE)
+test = subset(d6,sample == FALSE)
+
+model1 <- randomForest(K1 ~., data=train, importance=TRUE, ntree=1000, mtry=200)
+model1
+
+varImpPlot(model1)
+
+plot(model1, log="y")
+
+# done with random forest explainer
+#imp <- as.data.frame(model1$importance)
+#imp$SNP <- rownames(imp)
+#imp <- imp[order(imp$`%IncMSE`),]
+#dotchart(imp$`%IncMSE`, labels=imp$SNP, ces=0.7,
+#         ylab="SNPs", xlab="Mean Decrease in Accuracy", main="All SNPs, Ranked")
+
+#imp2 <- imp[which(imp$`%IncMSE` >= 0.001),]
+#dotchart(imp2$`%IncMSE`, labels=imp2$SNP, ces=0.7,
+#         ylab="SNPs", xlab="Mean Decrease in Accuracy", main="Top SNPs")
+
+```
+
+<br />
+
+- Below is a smorgasborg of QC (above model 1).
+  - Bottom line: nothing I wouldn't expect, given we have a lot of variables contributing a small amount.
+
+```{r qc }
+
+#Here's a bunch of qc options from randomForestexmaplainer
+min_depth_frame <- min_depth_distribution(model1)
+save(min_depth_frame, file = "min_depth_frame.rda")
+load("min_depth_frame.rda")
+head(min_depth_frame, n = 10)
+plot_min_depth_distribution(min_depth_frame)
+importance_frame <- measure_importance(model1)
+plot_multi_way_importance(importance_frame, size_measure = "no_of_nodes")
+plot_multi_way_importance(importance_frame, x_measure = "mse_increase", y_measure = "node_purity_increase", size_measure = "p_value", no_of_labels = 5)
+plot_importance_ggpairs(importance_frame)
+plot_importance_rankings(importance_frame)
+
+#get most important variabales in terms of minimul mean depth and # of trees
+#(vars <- important_variables(importance_frame, k = 5, measures = c("mean_min_depth", "no_of_trees")))
+#interactions_frame <- min_depth_interactions(model1, vars)
+#plot_min_depth_interactions(interactions_frame)
+#plot_predict_interaction(model1, train, "chr2_631190", "chr11_1058035")
+
+# here's the mother load
+#explain_forest(model1, interactions = TRUE, data = train)
+
+
+```
+
+<br />
+
+- Keeping top 300 samples with the least amount of missing data just as a sanity check
+
+```{r RFlowmiss }
+
+#Do the above, but for a more rigourous sample set with low missingness
+
+# for north/vs south
+d6 <- merged %>%
+  mutate(loc2 = as.factor(loc2)) %>%
+  filter(loc != "KIBAHA",
+         F_MISS <= 0.50) %>%
+  select(starts_with("chr"), loc2) 
+
+sample = sample.split(d6$loc2, SplitRatio = .75)
+train = subset(d6,sample == TRUE)
+test = subset(d6,sample == FALSE)
+
+# first random forest model on train
+model1 <- randomForest(loc2 ~., data=train, importance=TRUE, ntree=1000)
+
+model1.training.data <- model1
+model1.training.data
+
+prediction.test.data = predict(model1, newdata=test[-1615])
+cm = table(test[,1615], prediction.test.data) # looks like South cat is good, North not so much (makes sense with admixture)
+cm
+
+imp <- as.data.frame(model1$importance)
+imp$SNP <- rownames(imp)
+imp <- imp[order(imp$MeanDecreaseAccuracy),]
+dotchart(imp$MeanDecreaseAccuracy, labels=imp$SNP, ces=0.7)
+
+imp2 <- imp[which(imp$MeanDecreaseAccuracy >= 0.0005),]
+dotchart(imp2$MeanDecreaseAccuracy, labels=imp2$SNP, ces=0.7)
+
+```
+
+
+<br />
+
+```{r resources, eval=FALSE}
+
+#random forest resources
+
+#https://cran.rstudio.com/web/packages/randomForestExplainer/vignettes/randomForestExplainer.html
+
+#https://towardsdatascience.com/random-forest-in-r-f66adf80ec9
+
+#https://rpubs.com/mbaumer/randomForest
+
+#https://topepo.github.io/caret/data-splitting.html#simple-splitting-with-important-groups
+
+```
