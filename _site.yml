@@ -8,6 +8,6 @@ navbar:
   - text: "Missingness"
     href: 00-NIMR-TANZ-missingness.html
   - text: "Population Structure"
-    href: 01-NIMR-TANZ-pop-strucutre.html
+    href: 01-NIMR-TANZ-pop-struture.html
 output:
   html_document:
