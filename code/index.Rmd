@@ -3,6 +3,7 @@ title: "Welcome"
 author: "kamoser"
 date: "September 19, 2020"
 output: html_document
+site: bookdown::bookdown_site
 ---
 
 - Here is the output of the Rmarkdown files (found [here](https://github.com/kmogroethe/Mns-Tz-2017-PopGen-MIPs)) for the analysis presented in the [manuscript](https://www.biorxiv.org/content/10.1101/2020.05.09.085225v1) describing parasite population structure in Tanzania using molecular inversion probes.
