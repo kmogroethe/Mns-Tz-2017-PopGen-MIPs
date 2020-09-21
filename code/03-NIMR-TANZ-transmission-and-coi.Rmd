@@ -1,0 +1,572 @@
+---
+title: "NIMR Tanzania MIP Analysis - Transmission"
+author: "kamoser"
+date: "2019-03-10"
+output: 
+  #prettydoc::html_pretty:
+    html_document:
+      toc: true
+      toc_float: true
+      #toc_depth: 6
+    theme: spacelab
+    section_divs: yes
+---
+
+<br />
+
+```{r global option,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE,message=FALSE)
+
+.libPaths("/nas/longleaf/home/kamoser/bin/rlib/")
+
+#library(devtools)
+#devtools::install_github("OJWatson/McCOILR", force=TRUE)
+
+library(McCOILR)
+library(tidyr)
+library(vcfR)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(naniar)
+library(plotly)
+library(reshape2)
+library(gridExtra)
+library(viridis)
+
+# missingness information
+imiss1800 <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.no_controls.snps.targets_only.imiss",head=TRUE)
+imissDR <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_DRmip/analysis_vcf_format/variants.dr.fixed_miss.snps.no_controls.targets_only.imiss",head=TRUE)
+colnames(imiss1800)[1] <- "sample_id"
+colnames(imissDR)[1] <- "sample_id"
+
+# metadata
+metad <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/all_metadata_header.txt", head=TRUE, sep="\t")
+para <- read.table("/nas/longleaf/home/kamoser/daily/1812/tanzania_mip_analysis/parasitemia_hotspot_data.txt", header=TRUE, sep="\t")
+
+#plate information
+plate <- read.table("/nas/longleaf/home/kamoser/daily/1904/tanzania_mip_analysis/tanzania-platemaps.parsed.v4.txt",head=TRUE,sep="\t")
+
+```
+
+
+```{r create_metad}
+
+tmp <- merge(metad,plate,by=c("sample_id"),all=TRUE)
+tmp2 <- merge(tmp,imiss1800,by=c("sample_id"),all=TRUE)
+tmp3 <- merge(tmp2,para,by=c("ID"),all.x=TRUE)
+
+# 6 entries appear to be missing upon sample arrival at IDEEL
+# These are removed below (according to the plate maps there's 66 of these samples, but for whtaever reason they're not in my other datasets)
+
+all_metad <- tmp3 %>%
+  filter(!is.na(sample_id)) %>%
+  select(ID,sample_id,DISTRICT,REGION,Capture.Plate.Name,Capture.Plate.Location,
+       vilid,vilname,latitude,longitude,altitude,age,pfdens,N_MISS,F_MISS)
+
+all_metad$F_MISS[is.na(all_metad$F_MISS)] <- 1
+all_metad <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
+all_metad <- all_metad[which(!is.na(all_metad$DISTRICT)),] #T0578 ???
+all_metad1800 <- all_metad
+  
+```
+
+<br />
+
+## Goal
+
+<br />
+
+- Any epi factors that explain population structure we see in Tanzania?
+
+<br />
+
+## Polyclonality
+
+<br />
+
+- Real MCCoil estimates of COI using OJ's R wrapper 
+
+```
+out_cat <- McCOIL_categorical(d2,maxCOI=30, threshold_ind=20, threshold_site=20,
+                              totalrun=10000, burnin=100, M0=15, e1=0.05, e2=0.05,
+                              err_method=3, path="cat_output", output="output_test.txt" )
+```
+
+```{r realmcoil}
+
+# Loading data (transpose with datamash output of vcf-to-for_real_mccoil)
+
+d1 <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.no_controls.snps.targets_only.site90.indv90.recode.wsaf.real-mccoil.transposed.txt",
+           header=TRUE)
+#meta <- read.table("all_metad1800.txt",
+#                   header=TRUE)
+#colnames(meta)<- c("ID","name","DISTRICT","REGION")
+
+d2=d1[,-1]
+rownames(d2)=d1[,1]
+
+dir.create(path = "/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/real-mccoil_output_v2")
+
+#run categorical method
+
+out_cat_v2 <- McCOIL_categorical(d2,maxCOI=30, threshold_ind=20, threshold_site=20,
+                              totalrun=100000, burnin=1000, M0=15, e1=0.05, e2=0.05,
+                              err_method=3, path="/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/real-mccoil_output_v2", output="output_test.txt" )
+
+hist(as.numeric(as.character(out_cat$mean[out_cat$CorP=="C"])),
+     main = "Categorical Mean COI", xlab="COI", breaks=15)
+
+#checkin if things converged
+
+mcmc_runs <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/real-mccoil_output/output_test_wout_lastline.txt",stringsAsFactors = FALSE)
+
+samp <- as.data.frame(mcmc_runs[1:1000,1:50])
+samp_long <- melt(samp, id.vars=c("V1"))
+
+ggplot(samp_long, aes(V1,value, group=1)) +
+  geom_point(size=0.5) +
+  geom_path(color="black",size=0.5) +
+  facet_wrap(~ variable, ncol=5)
+  theme(
+
+  )
+
+  
+#lookin' at final results
+
+results <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/real-mccoil_output_v2/output_test.txt_summary.txt", header=TRUE)
+r2 <- results[which(results$CorP=="C"),]
+
+merged <- merge(r2,all_metad1800,by=c("sample_id"))
+
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA-DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+col_map <- c(ILEMELA="#FF6C91",CHATO="#E88526",NYANGHWALE="#82AD00",
+             BUHIGWE="#00B81E", KIGOMA="#00C0B3",UVINZA="#00B4EF",KYELA="#3FA1FF",NYASA="#7A97FF",TUNDURU="#BB81FF",
+             MASASI="#FF62BA",NANYUMBA="#FF67A2",MTWARA="#FB737A",KIBAHA="#C0C0C0")
+
+ggplot(merged, aes(loc,mean)) +
+  geom_boxplot() +
+  geom_jitter() +
+  xlab("District Level") + ylab("Mean COI Estimate")
+
+library(viridis)
+ggplot(merged, aes(loc,mean)) + 
+  geom_violin(trim=FALSE) +
+  geom_jitter(shape=16, position=position_jitter(0.2)) +
+  scale_color_viridis(discrete=TRUE)
+
+merged$mono <- ifelse(merged$mean == 1,
+                      1, 0)
+
+merged$AREA[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$AREA[merged$DISTRICT == "CHATO"] <- "01"
+merged$AREA[merged$DISTRICT == "NYANGHWALE"] <- "01"
+merged$AREA[merged$DISTRICT == "BUHIGWE"] <- "02"
+merged$AREA[merged$DISTRICT == "KIGOMA-UJIJI"] <- "02"
+merged$AREA[merged$DISTRICT == "UVINZA"] <- "02"
+merged$AREA[merged$DISTRICT == "KYELA"] <- "03"
+merged$AREA[merged$DISTRICT == "NYASA"] <- "03"
+merged$AREA[merged$DISTRICT == "TUNDURU"] <- "03"
+merged$AREA[merged$DISTRICT == "MASASI"] <- "03"
+merged$AREA[merged$DISTRICT == "NANYUMBU"] <- "03"
+merged$AREA[merged$DISTRICT == "MTWARA-DC"] <- "03"
+merged$AREA[merged$DISTRICT == "KIBAHA"] <- "04"
+
+chisq.test(table(merged$AREA,merged$mono))
+  
+
+```
+
+<br />
+
+- Here are the esimated COI estimates, at the district level:
+
+
+```{r polydist,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/real-mccoil_output")
+
+rmc <- read.table("output_test.txt_summary.txt",header=TRUE,sep="\t")
+rmc2 <- rmc[which(rmc$CorP=="C"),]
+
+meta <- all_metad1800
+#meta <- read.table("all_metadata1800.txt",header=TRUE,sep="\t")
+colnames(meta) <- c("ID","sample_id","DISTRICT","REGION")
+
+merged <- merge(rmc2,meta,by=c("sample_id"))
+
+
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+ggplot(merged, aes(loc,mean)) +
+  geom_boxplot() +
+  geom_jitter() +
+  xlab("District Level") + ylab("COI Estimate") +
+  theme(axis.text=element_text(size=16),
+        axis.text.x=element_text(angle = 45,size=14),
+        axis.title=element_text(size=20,face="bold"))
+
+merged$poly <- ifelse(merged$mean > 1, 1, 0)
+
+polysum <- merged %>%
+  group_by(DISTRICT) %>%
+  summarise( max = max (mean),
+             n = n(),
+             prop = sum(poly) / n)
+
+```
+
+<br />
+
+- Maybe some fluctations between sites, but not any strong patterns
+
+- However, possibly some differences at the region leve
+    - First plot: same as aboe ,just organized by region (north to south to west again)
+    - Second plot: used DHS data to get region-level malaria-prevelance data for each region, an dplotted that against the averaged COI for each district
+    
+<br />
+
+```{r polyregion,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/analysis/")
+
+rmc <- read.table("output_test.txt_summary.txt",header=TRUE,sep="\t")
+rmc2 <- rmc[which(rmc$CorP=="C"),]
+
+meta <- read.table("all_metadata_header.txt",header=TRUE,sep="\t")
+colnames(meta) <- c("ID","name","DISTRICT","REGION")
+
+merged <- merge(rmc2,meta,by=c("name"))
+
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+
+merged$reg[merged$REGION == "MWANZA"] <- "01"
+merged$reg[merged$REGION == "geita"] <- "02"
+merged$reg[merged$REGION == "kigoma"] <- "03"
+merged$reg[merged$REGION == "KIGOMA"] <- "03"
+merged$reg[merged$REGION == "MBEYA"] <- "04"
+merged$reg[merged$REGION == "ruvuma"] <- "05"
+merged$reg[merged$REGION == "mtwara"] <- "06"
+merged$reg[merged$REGION == "MTWARA"] <- "06"
+merged$reg[merged$REGION == "PWANI"] <- "07"
+
+merged$par[merged$reg == "01"] <- 8.1
+merged$par[merged$reg == "02"] <- 17.3
+merged$par[merged$reg == "03"] <- 24.4
+merged$par[merged$reg == "04"] <- 4.0
+merged$par[merged$reg == "05"] <- 11.8
+merged$par[merged$reg == "06"] <- 14.8
+merged$par[merged$reg == "07"] <- 5.3
+
+
+merged$reg <- factor(merged$reg,
+                     levels = c("01","02","03","04","05","06","07"),
+                     labels = c("MWANZA", "GEITA","KIGOMA",
+                                "MBEYA","RUVUMA","MTWARA","PWANI"))
+
+ggplot(merged, aes(reg,mean)) +
+  geom_boxplot() +
+  geom_jitter() +
+  xlab("Region") + ylab("Mean COI Estimate") +
+  theme(axis.text=element_text(size=16),
+        axis.title=element_text(size=20,face="bold"))
+
+data <- merged %>% 
+  filter(DISTRICT != "NYANGHWALE") %>%
+  group_by(reg) %>%
+  summarize(Mean = mean(mean, na.rm=TRUE))
+
+data$par[data$reg == "MWANZA"] <- 8.1
+data$par[data$reg == "GEITA"] <- 17.3
+data$par[data$reg == "KIGOMA"] <- 24.4
+data$par[data$reg == "MBEYA"] <- 4.0
+data$par[data$reg == "RUVUMA"] <- 11.8
+data$par[data$reg == "MTWARA"] <- 14.8
+data$par[data$reg == "PWANI"] <- 5.3
+
+num <-c(62,22,294,45,93,120,100)
+
+data2 <- cbind(data,num)
+
+ggplot(data2, aes(par, Mean,color=reg)) +
+  geom_smooth(method='lm', color="black") +
+  geom_point(aes(size=num)) +
+  scale_size(breaks=c(0,50,100,150,200,250),range=c(5,12)) +
+  xlab("Malaria Prevelance (%), RDT") +
+  ylab("Mean COI Estimate") +
+  labs(color="Region",size="# of Samples") +
+  scale_color_manual(values=c("purple","navyblue","royalblue2","turquoise","seagreen2","green","yellow")) +
+  #geom_text(aes(label=paste("n=",num),size=10,hjust=1.25)) +
+  #geom_smooth(method='lm', color="black") +
+  #scale_y_continuous(limit = c(1.2,1.8)) +
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=12),
+        panel.border = element_blank(),  
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #panel.background = element_blank(),
+        axis.line = element_line(colour = "black"))
+
+
+#merged$mono <- ifelse(merged$mean == 1,1,0)
+#table(merged$reg,merged$mono)
+
+```
+
+
+<br />
+
+
+```{r polyregion2,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+#setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/analysis/")
+
+#rmc <- read.table("output_test.txt_summary.txt",header=TRUE,sep="\t")
+#rmc2 <- rmc[which(rmc$CorP=="C"),]
+
+#meta <- read.table("all_metadata_header.txt",header=TRUE,sep="\t")
+#colnames(meta) <- c("ID","name","DISTRICT","REGION")
+
+#merged <- merge(rmc2,meta,by=c("sample_id"))
+
+results <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/real-mccoil_output_v2/output_test.txt_summary.txt", header=TRUE)
+r2 <- results[which(results$CorP=="C"),]
+
+merged <- merge(r2,all_metad1800,by=c("sample_id"))
+
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "11"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "10"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+
+merged$par[merged$loc == "01"] <- 6.8
+merged$par[merged$loc == "02"] <- 5.7
+merged$par[merged$loc == "03"] <- 9.2
+merged$par[merged$loc == "04"] <- 47.4
+merged$par[merged$loc == "05"] <- 40.6
+merged$par[merged$loc == "06"] <- 13.0
+merged$par[merged$loc == "07"] <- 0.0
+merged$par[merged$loc == "08"] <- 6.6
+merged$par[merged$loc == "09"] <- 21.0
+merged$par[merged$loc == "10"] <- 8.9
+merged$par[merged$loc == "11"] <- 0.0
+merged$par[merged$loc == "12"] <- 31.7
+merged$par[merged$loc == "13"] <- 10.0
+
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","NANYUMBU","MASASI","MTWARA","KIBAHA"))
+
+ggplot(merged, aes(loc,mean)) +
+  geom_boxplot() +
+  geom_jitter() +
+  xlab("Region") + ylab("Mean COI Estimate") +
+  theme(axis.text=element_text(size=16),
+        axis.title=element_text(size=20,face="bold"))
+
+data <- merged %>% 
+  filter(DISTRICT != "NYANGHWALE") %>%
+  group_by(loc) %>%
+  droplevels() %>%
+  summarize(Mean = mean(mean, na.rm=TRUE),
+            Median = median(median,na.rm=TRUE))
+
+data$par[data$loc == "ILEMELA"] <- 11.1
+data$par[data$loc == "CHATO"] <- 34.7
+data$par[data$loc == "NYANGHWALE"] <- 52.5
+data$par[data$loc == "BUHIGWE"] <- 37.4
+data$par[data$loc == "KIGOMA"] <- 30.3
+data$par[data$loc == "UVINZA"] <-42.1
+data$par[data$loc == "KYELA"] <- 17.1
+data$par[data$loc == "NYASA"] <- 30.1
+data$par[data$loc == "TUNDURU"] <- 62.3
+data$par[data$loc == "MASASI"] <- 30.1
+data$par[data$loc == "NANYUMBU"] <- 39.0
+data$par[data$loc == "MTWARA"] <- 31.7
+data$par[data$loc == "KIBAHA"] <- 10.7
+
+num <-c(64,18,74,153,67,45,26,67,85,23,12,100)
+
+data2 <- cbind(data,num)
+
+coi <- ggplot(data2, aes(par, Mean,label=loc)) +
+  #geom_smooth(method="lm", color="black") +
+  geom_point(aes(size=num,color=loc),alpha=0.8) +
+  geom_text(size=3.5,fontface = "bold") +
+  scale_color_viridis(discrete=TRUE) +
+  scale_size(breaks=c(0,50,100,150,200,250),range=c(5,12)) +
+  xlab("Malaria Prevalence (%)") +
+  ylab("Mean COI Estimate") +
+  labs(color="District",size="# of Samples") +
+  #scale_color_manual(values=c("purple","navyblue","royalblue2","turquoise","seagreen2","green","yellow")) +
+  #geom_text(aes(label=paste("n=",num),size=10,hjust=1.25)) +
+  #geom_smooth(method='lm', color="black") +
+  #scale_y_continuous(limit = c(1.2,1.8)) +
+  theme(axis.text=element_text(size=20),
+        axis.title=element_text(size=25),
+        panel.border = element_blank(),  
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.text=element_text(size=20),
+        legend.title = element_text(size=20),
+        #panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  guides(colour = guide_legend(override.aes = list(size=5)))
+
+tiff("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/2020-05-01_figure5_C.tiff", width=1200,height=700)
+coi
+dev.off()
+
+coi
+
+#merged$mono <- ifelse(merged$mean == 1,1,0)
+#table(merged$reg,merged$mono)
+
+```
+
+</ br>
+
+- One reviewer asked for a comparison of MOI estimated by The Real McCoil and from our MIP haploypte data:
+
+```{r haps}
+
+haps <- read.csv("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/from_oz_3x-runs/haplotype_counts.csv",head=TRUE)
+
+h1 <- haps %>%
+  filter(Read.Count >=5) %>%
+  group_by(Sample.ID,MIP) %>%
+  summarise(n = n_distinct(haplotype_sequence),
+            mean = mean(n),
+            median = median(n))
+
+h2 <- h1 %>%
+  group_by(Sample.ID) %>%
+  summarise(min.hap = min(n),
+            max.hap = max(n),
+            mean.hap = mean(n),
+            median.hap = median(n))
+
+# merge this data in with old coi results and metad
+
+colnames(h2)[1] <- "sample_id"
+
+merged <- merge(merged,h2,by=c("sample_id"))
+
+ggplot(merged, aes(loc,max.hap)) +
+  geom_boxplot() +
+  geom_jitter() +
+  xlab("Region") + ylab("Mean COI Estimate") +
+  theme(axis.text=element_text(size=16),
+        axis.title=element_text(size=20,face="bold"))
+
+data <- merged %>% 
+  filter(DISTRICT != "NYANGHWALE") %>%
+  group_by(loc) %>%
+  droplevels() %>%
+  summarize(Mean = mean(mean, na.rm=TRUE),
+            Mean.max.hap = median(max.hap,na.rm=TRUE))
+
+data$par[data$loc == "ILEMELA"] <- 11.1
+data$par[data$loc == "CHATO"] <- 34.7
+data$par[data$loc == "NYANGHWALE"] <- 52.5
+data$par[data$loc == "BUHIGWE"] <- 37.4
+data$par[data$loc == "KIGOMA"] <- 30.3
+data$par[data$loc == "UVINZA"] <-42.1
+data$par[data$loc == "KYELA"] <- 17.1
+data$par[data$loc == "NYASA"] <- 30.1
+data$par[data$loc == "TUNDURU"] <- 62.3
+data$par[data$loc == "MASASI"] <- 30.1
+data$par[data$loc == "NANYUMBU"] <- 39.0
+data$par[data$loc == "MTWARA"] <- 31.7
+data$par[data$loc == "KIBAHA"] <- 10.7
+
+num <-c(64,18,74,153,67,45,26,67,85,23,12,100)
+
+data2 <- cbind(data,num)
+
+ggplot(data2, aes(par, Mean.max.hap,label=loc)) +
+  #geom_smooth(method="lm", color="black") +
+  geom_point(aes(size=num,color=loc),alpha=0.8) +
+  geom_text(size=3.5,fontface = "bold") +
+  scale_color_viridis(discrete=TRUE) +
+  scale_size(breaks=c(0,50,100,150,200,250),range=c(5,12)) +
+  xlab("Malaria Prevalence (%)") +
+  ylab("Mean COI Estimate") +
+  labs(color="District",size="# of Samples") +
+  #scale_color_manual(values=c("purple","navyblue","royalblue2","turquoise","seagreen2","green","yellow")) +
+  #geom_text(aes(label=paste("n=",num),size=10,hjust=1.25)) +
+  #geom_smooth(method='lm', color="black") +
+  #scale_y_continuous(limit = c(1.2,1.8)) +
+  theme(axis.text=element_text(size=20),
+        axis.title=element_text(size=25),
+        panel.border = element_blank(),  
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.text=element_text(size=20),
+        legend.title = element_text(size=20),
+        #panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  guides(colour = guide_legend(override.aes = list(size=5)))
+
+```
+
+
+</br >

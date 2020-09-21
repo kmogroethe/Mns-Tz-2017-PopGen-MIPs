@@ -1,0 +1,1936 @@
+---
+title: "NIMR Tanzania MIPs - IBD Analysis"
+author: "kamoser"
+date: "2019-08-18"
+output: 
+  #prettydoc::html_pretty:
+    html_document:
+      toc: true
+      toc_float: true
+      toc_depth: 6
+    theme: spacelab
+    section_divs: yes
+---
+
+```{r global option,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE,message=FALSE)
+#knitr::opts_knit$set(root.dir = "/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only")
+
+library(raster)
+
+.libPaths("/nas/longleaf/home/kamoser/bin/rlib/")
+
+library(stringr)
+library(vcfR)
+library(adegenet)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(naniar)
+library(plotly)
+library(reshape2)
+library(gridExtra)
+library(viridis)
+library(kableExtra)
+library(MIPanalyzer)
+library(maptools)
+library(tidytext)
+library(igraph)
+
+# Read in necessary data sets for
+
+# vcf file (pcoa, dapc)
+vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.biallelic.targets_only.recode.vcf", verbose=FALSE)
+
+# missingness information
+imiss1800 <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.no_controls.snps.targets_only.imiss",head=TRUE)
+imissDR <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_DRmip/analysis_vcf_format/variants.dr.fixed_miss.snps.no_controls.targets_only.imiss",head=TRUE)
+colnames(imiss1800)[1] <- "sample_id"
+colnames(imissDR)[1] <- "sample_id"
+
+# metadata
+metad <- read.table("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/all_metadata_header.txt", head=TRUE, sep="\t")
+para <- read.table("/nas/longleaf/home/kamoser/daily/1812/tanzania_mip_analysis/parasitemia_hotspot_data.txt", header=TRUE, sep="\t")
+
+#plate information
+plate <- read.table("/nas/longleaf/home/kamoser/daily/1904/tanzania_mip_analysis/tanzania-platemaps.parsed.v4.txt",head=TRUE,sep="\t")
+
+```
+
+<br />
+
+## Overview
+
+<br />
+
+- This doc gives a deep dive into the things I looked at for assessing the relationship between IBD and geographic distance
+- All data is based on the 1800 MIP panel
+    - 737 samples retained for analysis
+
+<br />
+
+```{r create_metad}
+
+tmp <- merge(metad,plate,by=c("sample_id"),all=TRUE)
+tmp2 <- merge(tmp,imiss1800,by=c("sample_id"),all=TRUE)
+tmp3 <- merge(tmp2,para,by=c("ID"),all.x=TRUE)
+
+# 6 entries appear to be missing upon sample arrival at IDEEL
+# These are removed below (according to the plate maps there's 66 of these samples, but for whtaever reason they're not in my other datasets)
+
+all_metad <- tmp3 %>%
+  filter(!is.na(sample_id)) %>%
+  select(ID,sample_id,DISTRICT,REGION,Capture.Plate.Name,Capture.Plate.Location,
+       vilid,vilname,latitude,longitude,altitude,age,pfdens,N_MISS,F_MISS)
+
+all_metad$F_MISS[is.na(all_metad$F_MISS)] <- 1
+all_metad <- transform(all_metad,platenum=as.numeric(factor(Capture.Plate.Name)))
+all_metad <- all_metad[which(!is.na(all_metad$DISTRICT)),] #T0578 ???
+all_metad1800 <- all_metad
+
+levels(all_metad1800$DISTRICT)[levels(all_metad1800$DISTRICT) == "KIGOMA-UJIJI"] <- "KIGOMA"
+levels(all_metad1800$DISTRICT)[levels(all_metad1800$DISTRICT) == "MTWARA DC"] <- "MTWARA"
+
+```
+
+## Admixture Analysis
+
+<br />
+
+- As a reminder, I used Admixture to assess population structure among our 737 samples
+
+- Tested *K*=1 through 10
+    - 10 replicates for each *K*
+    - The rep with the highels log-likelihood value was chosen for each *K*
+    - That rep's cross-validation (CV) error was plotted to determine the *K* populations present in our data set
+
+```{r cv-error,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/admixture_v2")
+
+cv <- read.table("summary_cv-errors-from-highest-rep.txt", header=FALSE)
+
+plot(cv$V2,cv$V3,xlab=expression(italic("K")),ylab="CV Error",cex.axis=1.2,cex.lab=1.5,pch=19)
+
+```
+
+<br />
+
+- Pretty obvious answer of *K*=2 there.
+
+- For *K*=2, I plotted the proportion of each sample's genome that was assigned to eith er K1 or K2:
+
+<br />
+
+```{r admix,echo=FALSE,message=FALSE,warning=FALSE,fig.width=14, fig.height=9}
+
+setwd("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/admixture_v1")
+
+q <- read.table("samples.plink.2.Q", header=TRUE)
+qlong <- melt(q, id.vars=c("sample_id"))
+merged <- merge(all_metad1800,qlong,by=c("sample_id"))
+
+merged$sample_id <- as.character(merged$sample_id)
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+msort <- merged[order(merged$DISTRICT,merged$variable,merged$value),]
+msort$sample <- as.factor(msort$sample)
+#msort$sample2 <- factor(msort$sample, levels = msort[order(msort$variable), "sample"])
+
+
+#msort %>%
+#  mutate(sample = reorder_within(sample, value, loc)) %>%
+ggplot(msort, aes(sample,value,fill=variable)) +
+  #geom_col() +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values = c("darkmagenta","darkturquoise")) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  facet_wrap(~loc,scales = "free_x") +
+  scale_x_reordered()
+
+
+```
+
+<br />
+
+- Given the high amounts of missingess from some of the regions, I wanted to make sure that missingness doesn't predict a sample's assignment to one of the two populations. 
+- The below plot shows frequency of missing genotypes (y-axis) across samples (x-axis); each sample is colored by the proportion of the genome assigned to K2:
+
+```{r missstat}
+
+wide <- spread(msort,variable,value)
+wide$pop <- ifelse(wide$K2 > 0.50,2,1)
+
+ggplot(wide,aes(factor(sample),F_MISS)) +
+  #geom_point(aes(color = factor(pop))) +
+  geom_point(aes(color= K2)) +
+  ylab("Frequency of Missing Genotypes") +
+  xlab("Samples, by District") +
+  scale_fill_continuous(name = "Propotion of Genome Assigned to K2") +
+  #labs(fill = "Propotion of Genome Assigned to K2") +
+  facet_wrap(~loc,scales="free") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+```
+
+- I don't see any relationship between missingness, location, and K assignment.
+
+<br />
+
+
+## IBD by geographic distance - full data set (n=737)
+
+<br />
+
+- Another way to get at genetic distance at the district level would be to compare genetic relatedness directly to spatial distance.
+    - To measure IBD, the inbreeding coefficient(F) was calculated between each sample pair using all samples and all retained mips (n=737 and n=1,617, repsectively)
+      
+- The below graph shows the averaged IBD values for comparisons across all sample comparisons, as well as the sample-comparisons leading to inbreeding coefficient greater than 0.8:
+
+```{r ibd}
+
+vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.no_controls.snps.targets_only.site90.indv90.recode.wsaf.majorallele.no-nyanghwale.recode.vcf",verbose=FALSE)
+
+invisible(x <- vcfR2genlight(vcf))
+m <- as.matrix(dist(x))
+pcoa <- cmdscale(m, eig=TRUE, k=10)
+test <- data.frame(points=as.matrix(pcoa$points[,1:3]))
+test$sample_id <- rownames(test)
+merged <- merge(test, all_metad1800,by="sample_id")
+merged$loc[merged$DISTRICT == "ILEMELA"] <- "01"
+merged$loc[merged$DISTRICT == "CHATO"] <- "02"
+merged$loc[merged$DISTRICT == "NYANGHWALE"] <- "03"
+merged$loc[merged$DISTRICT == "BUHIGWE"] <- "04"
+merged$loc[merged$DISTRICT == "KIGOMA-UJIJI"] <- "05"
+merged$loc[merged$DISTRICT == "UVINZA"] <- "06"
+merged$loc[merged$DISTRICT == "KYELA"] <- "07"
+merged$loc[merged$DISTRICT == "NYASA"] <- "08"
+merged$loc[merged$DISTRICT == "TUNDURU"] <- "09"
+merged$loc[merged$DISTRICT == "MASASI"] <- "10"
+merged$loc[merged$DISTRICT == "NANYUMBU"] <- "11"
+merged$loc[merged$DISTRICT == "MTWARA DC"] <- "12"
+merged$loc[merged$DISTRICT == "KIBAHA"] <- "13"
+merged$loc <- factor(merged$loc,
+                     levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", "NYANGHWALE","BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA",
+                                "TUNDURU","MASASI","NANYUMBU","MTWARA","KIBAHA"))
+
+test <- vcf2mipanalyzer_biallelic(vcfR=vcf, verbose=FALSE)
+
+#invisible(get_genomic_distance(test,report_progress=FALSE))
+invisible(inf <- inbreeding_mle(test, f=seq(0,1,l=100), report_progress=FALSE))
+
+inf.m <- inf$mle
+inf.m2 <- melt(inf.m)
+inf.m3 <- inf.m2 %>%
+  drop_na()
+
+samples <- test$samples
+samples <- samples %>%
+  add_rownames()
+colnames(samples) <- c("Var1","sample_id")
+
+inf.m4 <- merge(samples,inf.m3,by=c("Var1"))
+colnames(samples) <- c("Var2","sample_id2")
+inf.m5 <- merge(samples,inf.m4, by=c("Var2"))
+
+#get distance between each of my 13 geographic locations
+sp <- get_spatial_distance(c(-2.583333,-2.633333,-3.2,
+                                  -4.448056,-4.883333,-5.103611,-9.625,-11.35658,-11,
+                                  -10.717,-11.05269,-10.273611,-6.766667),
+                     c(32.916667,31.766667,32.65,
+                                   29.924167,29.633333,30.391111,33.875,34.86847,37.5,
+                                   38.8,38.5976,40.182778,38.916667))
+
+sp.m2 <- melt(sp)
+sp.m2$Var1 <- factor(sp.m2$Var1,
+                    levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13),
+                    labels = c("ILEMELA","CHATO","NYANGHWALE",
+                               "BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA","TUNDURU",
+                               "MASASI","NANYUMBU","MTWARA","KIBAHA"))
+sp.m2$Var2 <- factor(sp.m2$Var2,
+                     levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13),
+                     labels = c("ILEMELA","CHATO","NYANGHWALE",
+                                "BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA","TUNDURU",
+                                "MASASI","NANYUMBU","MTWARA","KIBAHA"))
+sp.m2$comparison <- paste(sp.m2$Var1, "-", sp.m2$Var2)
+
+# make meta data geo by district location
+
+district=c("ILEMELA","CHATO","NYANGHWALE",
+                                    "BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA","TUNDURU",
+                                    "MASASI","NANYUMBU","MTWARA","KIBAHA")
+latitude = c(-2.583333,-2.633333,-3.2, -4.448056,-4.883333,-5.103611,-9.625,-11.35658,-11,
+                                      -10.717,-11.05269,-10.273611,-6.766667)
+longitude = c(32.916667,31.766667,32.65,29.924167,29.633333,30.391111,33.875,34.86847,37.5,
+                                       38.8,38.5976,40.182778,38.916667)
+points <- cbind(district, latitude, longitude)
+
+# merge as above so you have sample 1 location and sample 2 location
+# Create variable concatenating DISTRICT-DISTRICT
+all_metad1800v2 <- all_metad1800[,1:4]
+colnames(all_metad1800v2) <- c("ID","sample_id","DISTRICT","REGION")
+inf.m6 <- merge(all_metad1800v2,inf.m5,by=c("sample_id"))
+
+colnames(all_metad1800v2) <- c("ID2","sample_id2","DISTRICT2","REGION2")
+inf.m7 <- merge(all_metad1800v2,inf.m6,by=c("sample_id2"))
+inf.m7$comparison <- paste(inf.m7$DISTRICT, "-", inf.m7$DISTRICT2)
+
+# Merge with spatial_distances data set
+
+e <- merge(inf.m7,sp.m2,by=c("comparison"))
+
+#plot raw and averaged inbreeding coefficents by geographic distance
+
+ggplot(e,aes(value.x))+geom_histogram(bins=100)
+
+highf <- e %>%
+  filter(value.x >= 0.80) %>%
+  select(comparison,sample_id, sample_id2, value.x) %>%
+  rename(inbreeding.coefficent = value.x )
+
+kable(highf) %>%
+  kable_styling()
+
+```
+
+</br>
+
+- The majority of sample-sample comparisons have low (< 0.2) inbreeding coefficient
+- 24 have values greater than 0.8
+    - However, I'm just realizing that some samples that I'm treating as independent are most likely drawn from the same patient at different time point (from the drug efficacy studies)
+    - For example, T0162-JJJ-1 and T0162D21-JJJ-1 are probably day one and something like day 21, correct?
+    
+- It's a small number, but for these series, I kept the first initial sample, and removed all subsequenct samples.
+    - Here's the same data after removing these non-independent samples:
+    
+</br>
+
+```{r non-ind, eval=FALSE}
+
+samps <- test$samples
+
+to <- samps %>%
+  filter(grepl("T0",SAMPLE_ID)) %>%
+  separate(SAMPLE_ID, into="sample", sep="-",extra='drop',remove=FALSE) %>%
+  mutate(base = substring(sample, 1,5))
+
+dups <- duplicated(to$base) | duplicated(to$base,fromLast=TRUE)
+probsamps <- to[dups,]
+
+probsamp2 <- probsamps %>%
+  filter(!grepl("K",sample),
+         !grepl("U",sample),
+         !grepl("AGF",sample),
+         !grepl("GF",sample))
+
+format <- data.frame("FORMAT","FORMAT","FORMAT")
+colnames(format) <- c("SAMPLE_ID","sample","base")
+probsamp3 <-rbind(probsamp2,format)
+probsamp4 <- probsamp3 %>%
+  group_by(base) %>%
+  mutate(id = row_number()) %>%
+  filter(id != 1)
+  
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+vcf@gt <- vcf@gt[, colnames(vcf@gt) %!in% probsamp4$SAMPLE_ID] 
+
+vcfprom <- vcf
+
+#redo ibd with only duplicate values
+
+test <- vcf2mipanalyzer_biallelic(vcfR=vcfprom, verbose=FALSE)
+invisible(inf <- inbreeding_mle(test, f=seq(0,1,l=100), report_progress=FALSE))
+
+inf.m <- inf$mle
+inf.m2 <- melt(inf.m)
+inf.m3 <- inf.m2 %>%
+  drop_na()
+
+samples <- test$samples
+samples <- samples %>%
+  add_rownames()
+colnames(samples) <- c("Var1","sample_id")
+
+inf.m4 <- merge(samples,inf.m3,by=c("Var1"))
+colnames(samples) <- c("Var2","sample_id2")
+inf.m5 <- merge(samples,inf.m4, by=c("Var2"))
+
+all_metad1800v2 <- all_metad1800[,1:4]
+colnames(all_metad1800v2) <- c("ID","sample_id","DISTRICT","REGION")
+inf.m6 <- merge(all_metad1800v2,inf.m5,by=c("sample_id"))
+
+colnames(all_metad1800v2) <- c("ID2","sample_id2","DISTRICT2","REGION2")
+inf.m7 <- merge(all_metad1800v2,inf.m6,by=c("sample_id2"))
+inf.m7$comparison <- paste(inf.m7$DISTRICT, "-", inf.m7$DISTRICT2)
+
+# Merge with spatial_distances data set
+
+e <- merge(inf.m7,sp.m2,by=c("comparison"))
+
+#plot raw and averaged inbreeding coefficents by geographic distance
+
+ggplot(e,aes(value.x))+geom_histogram(bins=100)
+
+highf <- e %>%
+  filter(value.x >= 0.80) %>%
+  select(comparison,sample_id, sample_id2, value.x) %>%
+  rename(inbreeding.coefficent = value.x )
+
+kable(highf) %>%
+  kable_styling()
+
+```
+
+```{r non-ind-ibd}
+ 
+samps <- test$samples
+
+to <- samps %>%
+  filter(grepl("T0",SAMPLE_ID)) %>%
+  separate(SAMPLE_ID, into="sample", sep="-",extra='drop',remove=FALSE) %>%
+  mutate(base = substring(sample, 1,5))
+
+dups <- duplicated(to$base) | duplicated(to$base,fromLast=TRUE)
+probsamps <- to[dups,]
+
+probsamp2 <- probsamps %>%
+  filter(!grepl("K",sample),
+         !grepl("U",sample),
+         !grepl("AGF",sample),
+         !grepl("GF",sample))
+
+#assing a format so that field get's pulled from the vcf file as well
+format <- data.frame("FORMAT","FORMAT","FORMAT")
+colnames(format) <- c("SAMPLE_ID","sample","base")
+probsamp3 <-rbind(probsamp2,format)
+
+#select all samples that are subsequent duplicates of an initial index case
+probsamp4 <- probsamp3 %>%
+  group_by(base) %>%
+  mutate(id=row_number()) %>%
+  filter(id != 1)
+
+vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/variants.fixed_genos.no_controls.snps.targets_only.site90.indv90.recode.wsaf.majorallele.no-nyanghwale.recode.vcf",verbose=FALSE)
+
+'%ni%' <- Negate('%in%')
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+vcf@gt <- vcf@gt[, colnames(vcf@gt) %!in% probsamp4$SAMPLE_ID] 
+
+vcfgood <- vcf
+
+#redo ibd with only duplicate values
+
+test <- vcf2mipanalyzer_biallelic(vcfR=vcfgood, verbose=FALSE)
+invisible(inf <- inbreeding_mle(test, f=seq(0,1,l=100), report_progress=FALSE))
+
+inf.m <- inf$mle
+inf.m2 <- melt(inf.m)
+inf.m3 <- inf.m2 %>%
+  drop_na()
+
+samples <- test$samples
+samples <- samples %>%
+  add_rownames()
+colnames(samples) <- c("Var1","sample_id")
+
+inf.m4 <- merge(samples,inf.m3,by=c("Var1"))
+colnames(samples) <- c("Var2","sample_id2")
+inf.m5 <- merge(samples,inf.m4, by=c("Var2"))
+
+all_metad1800v2 <- all_metad1800[,1:4]
+colnames(all_metad1800v2) <- c("ID","sample_id","DISTRICT","REGION")
+inf.m6 <- merge(all_metad1800v2,inf.m5,by=c("sample_id"))
+
+colnames(all_metad1800v2) <- c("ID2","sample_id2","DISTRICT2","REGION2")
+inf.m7 <- merge(all_metad1800v2,inf.m6,by=c("sample_id2"))
+inf.m7$comparison <- paste(inf.m7$DISTRICT, "-", inf.m7$DISTRICT2)
+
+# Merge with spatial_distances data set
+
+e <- merge(inf.m7,sp.m2,by=c("comparison"))
+
+#plot raw and averaged inbreeding coefficents by geographic distance
+
+ggplot(e,aes(value.x))+geom_histogram(bins=100)
+
+highf <- e %>%
+  filter(value.x >= 0.75) %>%
+  select(comparison,sample_id, sample_id2, value.x) %>%
+  rename(inbreeding.coefficent = value.x )
+
+kable(highf) %>%
+  kable_styling()
+
+```
+
+</br>
+
+- Okay better. Now 18 comparisons have inbreeding coefficients > 80%; all those greater than 90 were from inter-district comparisons, with 2 comparisons with F >= 80% being from betwenn-district comparisons
+    - Those between district comparisons are still ones that are geographically close to one another
+    
+</br>
+
+- Following that thought, we next looked at inbreeding coefficient values compared to geographic distance.
+    - The geographic distances between districts in each sample comparisons were binned into windows of varying sizes (kilometers)
+      - For the Big Mip Paper, bins were 150km in size, and I assume this was chosen based on the distribution of distances between all of the sampling clusters, so I played around with this a bit.
+
+</br>
+
+```{r binned-ibd}
+
+#try bins of 100 first
+bins <- c(-1,1,100,200,300,400,500,600,700,800,900,1000,1100,1200,1300,1400)
+names <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14),
+                      labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.03,label=elements),vjust=0.5,size=3) +
+  scale_x_discrete(labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300","1,301-1,400")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+</br>
+
+- The number of district comparisons included in each bin are denoted above each point estimate
+    - For example, as there are 12 districts in this analyis, there are 12 district comparisons in the 0 bin category (each district is compared to itself)
+
+</br>
+
+- Also tried binning by 150 and 200 km: 
+
+</br>
+
+```{r binned-ibd-150}
+
+# 150 km bins
+
+bins <- c(-1,1,150,300,450,600,750,900,1050,1200)
+names <- c(1,2,3,4,5,6,7,8,9)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10),
+                      labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.03,label=elements),vjust=0.5,size=3) +
+  ggtitle("Bin size = 150 km") +
+  scale_x_discrete(labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 200 km bins
+
+bins <- c(-1,1,200,400,600,800,1000,1200,1400)
+names <- c(1,2,3,4,5,6,7,8)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8),
+                      labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,001-1,200","1,201-1,400")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab(expression(paste("Relatedness (", italic("F"), ")"))) + xlab("Distance (km)") +
+  geom_text(aes(y=0.026,label=elements),vjust=0.5,size=10) +
+  scale_x_discrete(labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,000-1,200","1,201-1,400")) +
+  ggtitle("Bin size = 200 km") +
+  theme(axis.text.x = element_text(size=25,angle = 45, hjust = 1),
+        axis.text.y = element_text(size=25),
+        axis.title = element_text(size=30)) 
+
+```
+</br>
+
+- Overall, the trend is: the farther away any two samples are, the smaller amount of genetic relatedness
+    - Something interesting going on in samples from 100-200 km apart
+        - A comparison driving IBD up, indicating samples in the comparison are more similar than (on average) samples from the same site??
+        - However, binning by 200 km smooths that signal out
+    
+- To investigate this further, I looked at which comparisons were contributing to those points:
+
+
+```{r ibd-nony}
+
+e2 <- e %>%
+  group_by(comparison) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+        lower.ci = av - qt(1 - (0.05 / 2), n - 1) * se,
+        upper.ci = av + qt(1 - (0.05 / 2), n - 1) * se)
+
+e3 <- merge(e2,sp.m2,by=c("comparison"))
+e3$comparison <- factor(e3$comparison, levels=e3$comparison[order(e3$value)])
+
+ggplot(e3,aes(comparison,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.05)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+dlist <- unique(all_metad1800$DISTRICT)
+dlist <- dlist[!dlist %in% "NYANGHWALE"]
+flw <- vector("list", length(dlist))
+
+for (x in dlist) {
+  #print(dlist[i])
+  flw[[x]] <- e2 %>%
+    filter(!grepl("NYANGHWALE",comparison)) %>%
+    filter(grepl(x, comparison)) %>%
+    separate(comparison,c("d1","d2")," - ") %>%
+    mutate(newd1 = x,
+         newd2 = ifelse(d1 == x, d2, d1),
+         comparison = paste(d1, "-", d2))
+}
+
+e3 <- bind_rows(flw)
+
+e4 <- merge(e3,sp.m2,by=c("comparison"))
+e4$newc <- paste(e4$newd1," - ", e4$newd2)
+e4$newc <- factor(e4$newc, levels=e4$newc[order(e4$value)])
+
+e4$newd1 <- ordered(e4$newd1,
+                    levels=c("BUHIGWE","CHATO","ILEMELA",
+                             "KIBAHA","KIGOMA","KYELA",
+                             "MASASI","MTWARA","NANYUMBU",
+                             "NYANGHWALE","NYASA","TUNDURU",
+                             "UVINZA"),
+                    labels=c("Buhigwe (n=75)","Chato (n=17)",
+                             "Ilemela (n=64)","Kibaha (n=101)",
+                             "Kigoma (n=154)","Kyela (n=45)",
+                             "Masasi (n=86)","Mtwara(n=12)",
+                             "Nanyumbu (n=23)","Nyanghwale (n=5)",
+                             "Nyasa (n=26)","Tunduru (n=67)", 
+                             "Uvinza (n=67)"))
+
+ggplot(e4,aes(newc,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.05)) +
+  facet_wrap(~newd1,scales="free") +
+  xlab("Comparison District, Sorted by Increasing Distance") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+```
+
+- There are samples from certain districts causing more uncertainty in these estimates
+- Possibly sites that we lost a lot of data for 
+    - Chato, Nanyumbu...
+    - Are the above patterns due to higher amounts of missing data in certain regions?
+    
+<br />
+
+## IBD by geographic distance, high quality samps (n=515)
+
+- Here is the above IBD analyses redone, but only using 515 samples that had at least 50% genotypes called (instead of 10% / n=737, which is what we were using before):
+
+```{r redoneibd}
+
+invisible(vcf <- read.vcfR("/proj/ideel/julianog/users/kamoser/mip_analyses/2018-09_tanzania_1800mip/2019-04_analysis/targeted-only/high-confidence-only/high-quality-samples.recode.vcf",verbose=FALSE))
+
+vcf@gt <- vcf@gt[, colnames(vcf@gt) %!in% probsamp4$SAMPLE_ID] 
+
+vcfgood <- vcf
+
+invisible(mips <- vcf2mipanalyzer_biallelic(vcfR=vcfgood,verbose=FALSE))
+
+#invisible(get_genomic_distance(test,report_progress=FALSE))
+inf <- inbreeding_mle(mips, f=seq(0,1,l=100), report_progress=FALSE)
+
+inf.m <- inf$mle
+inf.m2 <- melt(inf.m)
+inf.m3 <- inf.m2 %>%
+  drop_na()
+
+samples <- mips$samples
+samples <- samples %>%
+  add_rownames()
+colnames(samples) <- c("Var1","sample_id")
+
+inf.m4 <- merge(samples,inf.m3,by=c("Var1"))
+colnames(samples) <- c("Var2","sample_id2")
+inf.m5 <- merge(samples,inf.m4, by=c("Var2"))
+
+#get distance between each of my 13 geographic locations
+sp <- get_spatial_distance(c(-2.583333,-2.633333,-3.2,
+                                  -4.448056,-4.883333,-5.103611,-9.625,-11.35658,-11,
+                                  -10.717,-11.05269,-10.273611,-6.766667),
+                     c(32.916667,31.766667,32.65,
+                                   29.924167,29.633333,30.391111,33.875,34.86847,37.5,
+                                   38.8,38.5976,40.182778,38.916667))
+
+sp.m2 <- melt(sp)
+sp.m2$Var1 <- factor(sp.m2$Var1,
+                    levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13),
+                    labels = c("ILEMELA","CHATO","NYANGHWALE",
+                               "BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA","TUNDURU",
+                               "MASASI","NANYUMBU","MTWARA","KIBAHA"))
+sp.m2$Var2 <- factor(sp.m2$Var2,
+                     levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13),
+                     labels = c("ILEMELA","CHATO","NYANGHWALE",
+                                "BUHIGWE","KIGOMA","UVINZA","KYELA","NYASA","TUNDURU",
+                                "MASASI","NANYUMBU","MTWARA","KIBAHA"))
+sp.m2$comparison <- paste(sp.m2$Var1, "-", sp.m2$Var2)
+
+# make meta data geo by district location
+
+district=c("ILEMELA","CHATO","NYANGHWALE",
+                                    "BUHIGWE","","UVINZA","KYELA","NYASA","TUNDURU",
+                                    "MASASI","NANYUMBU","MTWARA","KIBAHA")
+latitude = c(-2.583333,-2.633333,-3.2, -4.448056,-4.883333,-5.103611,-9.625,-11.35658,-11,
+                                      -10.717,-11.05269,-10.273611,-6.766667)
+longitude = c(32.916667,31.766667,32.65,29.924167,29.633333,30.391111,33.875,34.86847,37.5,
+                                       38.8,38.5976,40.182778,38.916667)
+points <- cbind(district, latitude, longitude)
+
+# merge as above so you have sample 1 location and sample 2 location
+# Create variable concatenating DISTRICT-DISTRICT
+all_metad1800v2 <- all_metad1800[,1:4]
+colnames(all_metad1800v2) <- c("ID","sample_id","DISTRICT","REGION")
+inf.m6 <- merge(all_metad1800v2,inf.m5,by=c("sample_id"))
+
+colnames(all_metad1800v2) <- c("ID2","sample_id2","DISTRICT2","REGION2")
+inf.m7 <- merge(all_metad1800v2,inf.m6,by=c("sample_id2"))
+inf.m7$comparison <- paste(inf.m7$DISTRICT, "-", inf.m7$DISTRICT2)
+
+# Merge with spatial_distances data set
+
+library(cowplot)
+
+e <- merge(inf.m7,sp.m2,by=c("comparison"))
+
+main <- ggplot(e,aes(value.x)) +
+  geom_histogram(bins=50) +
+  xlab("Relatedness (F)") + ylab("Frequency")
+
+inset <- ggplot(e,aes(value.x)) +
+  geom_histogram(bins=50) +
+  xlab("") + ylab("") +
+  scale_x_continuous(limits = c(0.75, 1.0))
+
+plot.with.inset <- ggdraw() +
+  draw_plot(main) +
+  draw_plot(inset,x=0.5,y=0.5,width = .4, height = .4) 
+
+plot.with.inset
+
+highf <- e %>%
+  filter(value.x >= 0.75) %>%
+  select(comparison,sample_id, sample_id2, value.x) %>%
+  rename(inbreeding.coefficent = value.x )
+
+kable(highf) %>%
+  kable_styling()
+#Bin geographic distance 
+```
+
+</br>
+
+... and re-binned...
+
+</br>
+
+```{r rebin}
+
+#try bins of 100 first
+bins <- c(-1,1,100,200,300,400,500,600,700,800,900,1000,1100,1200,1300,1400)
+names <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14),
+                      labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.024,label=elements),vjust=0.5,size=3) +
+  ggtitle("Geographic Distance Binned by 100 km") +
+  scale_x_discrete(labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300","1,301-1,400")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 150 km bins
+
+bins <- c(-1,1,150,300,450,600,750,900,1050,1200)
+names <- c(1,2,3,4,5,6,7,8,9)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10),
+                      labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.021,label=elements),vjust=0.5,size=3) +
+  ggtitle("Geographic Distance Binned by 150 km") +
+  scale_x_discrete(labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1,050","1,051-1,200",
+                            "1,201-1,350")) +
+  theme(axis.text.x = element_text(size=25,angle = 45, hjust = 1),
+        axis.text.y = element_text(size=25),
+        axis.title = element_text(size=30)) 
+
+# 200 km bins
+
+bins <- c(-1,1,200,400,600,800,1000,1200,1400)
+names <- c(1,2,3,4,5,6,7,8)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8),
+                      labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,001-1,200","1,201-1,400")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+average.ibd.results <- e2
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab(expression(paste("Relatedness (", italic("F"), ")"))) + xlab("Distance (km)") +
+  geom_text(aes(y=0.021,label=elements),vjust=0.5,size=15) +
+  ggtitle("Geographic Distance Binned by 200 km") +
+  scale_x_discrete(labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,000-1,200","1,201-1,400")) +
+    theme(axis.text.x = element_text(size=25,angle = 45, hjust = 1),
+        axis.text.y = element_text(size=35),
+        axis.title = element_text(size=40)) 
+  
+#save for later
+
+ibd <- ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab(expression(paste("Relatedness (", italic("F"), ")"))) + xlab("Distance (km)") +
+  geom_text(aes(y=0.021,label=elements),vjust=0.5,size=7) +
+  scale_x_discrete(labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,000-1,200","1,201-1,400")) +
+    theme(axis.text.x = element_text(size=20,angle = 45, hjust = 1),
+        axis.text.y = element_text(size=20),
+        axis.title = element_text(size=25))  
+
+```
+
+</br>
+
+... and breaking it down by district...
+
+```{r ibdagainz, fig.width=10, fig.height=8}
+
+e2 <- e %>%
+  group_by(comparison) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+        lower.ci = av - qt(1 - (0.05 / 2), n - 1) * se,
+        upper.ci = av + qt(1 - (0.05 / 2), n - 1) * se)
+
+e3 <- merge(e2,sp.m2,by=c("comparison"))
+e3$comparison <- factor(e3$comparison, levels=e3$comparison[order(e3$value)])
+
+#ggplot(e3,aes(comparison,av)) +
+#  geom_point() +
+#  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+#                position=position_dodge(0.05)) +
+#  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+dlist <- unique(all_metad1800$DISTRICT)
+dlist <- dlist[!dlist %in% "NYANGHWALE"]
+flw <- vector("list", length(dlist))
+
+for (x in dlist) {
+  #print(dlist[i])
+  flw[[x]] <- e2 %>%
+    filter(!grepl("NYANGHWALE",comparison)) %>%
+    filter(grepl(x, comparison)) %>%
+    separate(comparison,c("d1","d2")," - ") %>%
+    mutate(newd1 = x,
+         newd2 = ifelse(d1 == x, d2, d1),
+         comparison = paste(d1, "-", d2))
+}
+
+e3 <- bind_rows(flw)
+
+e4 <- merge(e3,sp.m2,by=c("comparison"))
+e4$newc <- paste(e4$newd1," - ", e4$newd2)
+e4$newc <- factor(e4$newc, levels=e4$newc[order(e4$value)])
+
+
+e4$sized1[e4$newd1 == "ILEMELA"] <- 39
+e4$sized1[e4$newd1 == "CHATO"] <- 9
+e4$sized1[e4$newd1 == "BUHIGWE"] <- 50
+e4$sized1[e4$newd1 == "KIBAHA"] <- 73
+e4$sized1[e4$newd1 == "KIGOMA"] <- 131
+e4$sized1[e4$newd1 == "KYELA"] <- 22
+e4$sized1[e4$newd1 == "MASASI"] <- 71
+e4$sized1[e4$newd1 == "MTWARA"] <- 9
+e4$sized1[e4$newd1 == "NANYUMBU"] <- 10
+e4$sized1[e4$newd1 == "NYANGHWALE"] <- 0
+e4$sized1[e4$newd1 == "NYASA"] <- 14
+e4$sized1[e4$newd1 == "TUNDURU"] <- 47
+e4$sized1[e4$newd1 == "UVINZA"] <- 40
+
+e4$sized2[e4$newd2 == "ILEMELA"] <- 39
+e4$sized2[e4$newd2 == "CHATO"] <- 9
+e4$sized2[e4$newd2 == "BUHIGWE"] <- 50
+e4$sized2[e4$newd2 == "KIBAHA"] <- 73
+e4$sized2[e4$newd2 == "KIGOMA"] <- 131
+e4$sized2[e4$newd2 == "KYELA"] <- 22
+e4$sized2[e4$newd2 == "MASASI"] <- 71
+e4$sized2[e4$newd2 == "MTWARA"] <- 9
+e4$sized2[e4$newd2 == "NANYUMBU"] <- 10
+e4$sized2[e4$newd2 == "NYANGHWALE"] <- 0
+e4$sized2[e4$newd2 == "NYASA"] <- 14
+e4$sized2[e4$newd2 == "TUNDURU"] <- 47
+e4$sized2[e4$newd2 == "UVINZA"] <- 40
+
+e4$totalsize <- e4$sized1 + e4$sized2
+
+e4$loc[e4$newd1 == "ILEMELA"] <- "01"
+e4$loc[e4$newd1 == "CHATO"] <- "02"
+e4$loc[e4$newd1 == "NYANGHWALE"] <- "03"
+e4$loc[e4$newd1 == "BUHIGWE"] <- "04"
+e4$loc[e4$newd1 == "KIGOMA"] <- "05"
+e4$loc[e4$newd1 == "UVINZA"] <- "06"
+e4$loc[e4$newd1 == "KYELA"] <- "07"
+e4$loc[e4$newd1 == "NYASA"] <- "08"
+e4$loc[e4$newd1 == "TUNDURU"] <- "09"
+e4$loc[e4$newd1 == "MASASI"] <- "11"
+e4$loc[e4$newd1 == "NANYUMBU"] <- "10"
+e4$loc[e4$newd1 == "MTWARA"] <- "12"
+e4$loc[e4$newd1 == "KIBAHA"] <- "13"
+e4$loc <- factor(e4$loc,levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA (n=39)", "CHATO (n=9)", 
+                                "NYANGHWALE (n=0)","BUHIGWE (n=50)",
+                                "KIGOMA (n=131)","UVINZA (n=40)",
+                                "KYELA (n=22)","NYASA (n=14)",
+                               "TUNDURU (n=47)",
+                               "NANYUMBU (n=10)","MASASI (n=71)","MTWARA (n=9)",
+                               "KIBAHA (n=73)"))
+
+e4$newd2[e4$newd2 == "ILEMELA"] <- "01"
+e4$newd2[e4$newd2 == "CHATO"] <- "02"
+e4$newd2[e4$newd2 == "NYANGHWALE"] <- "03"
+e4$newd2[e4$newd2 == "BUHIGWE"] <- "04"
+e4$newd2[e4$newd2 == "KIGOMA"] <- "05"
+e4$newd2[e4$newd2 == "UVINZA"] <- "06"
+e4$newd2[e4$newd2 == "KYELA"] <- "07"
+e4$newd2[e4$newd2 == "NYASA"] <- "08"
+e4$newd2[e4$newd2 == "TUNDURU"] <- "09"
+e4$newd2[e4$newd2 == "MASASI"] <- "11"
+e4$newd2[e4$newd2 == "NANYUMBU"] <- "10"
+e4$newd2[e4$newd2 == "MTWARA"] <- "12"
+e4$newd2[e4$newd2 == "KIBAHA"] <- "13"
+e4$newd2 <- ordered(e4$newd2,levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", 
+                                "NYANGHWALE","BUHIGWE",
+                                "KIGOMA","UVINZA",
+                                "KYELA","NYASA",
+                               "TUNDURU","NANYUMBU","MASASI",
+                               "MTWARA",
+                               "KIBAHA"))
+
+e4$newd1 <- ordered(e4$newd1,
+                    levels=c("BUHIGWE","CHATO","ILEMELA",
+                             "KIBAHA","KIGOMA","KYELA",
+                             "MASASI","MTWARA","NANYUMBU",
+                             "NYANGHWALE","NYASA","TUNDURU",
+                             "UVINZA"),
+                    labels=c("Buhigwe (n=75)","Chato (n=17)",
+                             "Ilemela (n=64)","Kibaha (n=101)",
+                             "Kigoma (n=154)","Kyela (n=45)",
+                             "Masasi (n=86)","Mtwara(n=12)",
+                             "Nanyumbu (n=23)","Nyanghwale (n=5)",
+                             "Nyasa (n=26)","Tunduru (n=67)", 
+                             "Uvinza (n=67)"))
+
+#ggplot(e4,aes(newc,av)) +
+#  geom_point() +
+#  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+#                position=position_dodge(0.05)) +
+#  facet_wrap(~newd1) +
+#  xlab("Comparison District, Sorted by Increasing Distance") +
+#  theme(axis.text.x=element_blank(),
+#        axis.ticks.x=element_blank())
+
+plot <- ggplot(e4,aes(newc,av)) +
+  geom_point(aes(size=totalsize,color=factor(newd2))) +
+  scale_color_viridis(discrete=TRUE) +
+  labs(color="Comparison District",size="# of Samples in Comparison") +
+  scale_size(range=c(1,9)) +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.05)) +
+  facet_wrap(~loc,scales="free") +
+  #ggtitle("Free y-axis") +
+  xlab("Comparison District, Sorted by Increasing Geographic Distance") +
+  ylab("Relatedness (F)") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+tiff("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/2020-07-06-IBD-by-district.tiff", width = 13, height = 8, units = 'in', res = 400)
+plot # Make plot
+dev.off()
+
+ggplot(e4,aes(newc,av)) +
+  geom_point(aes(size=totalsize,color=factor(newd2))) +
+  scale_color_viridis(discrete=TRUE) +
+  labs(color="Comparison District",size="# of Samples in Comparison") +
+  scale_size(range=c(1,9)) +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.05)) +
+  facet_wrap(~loc) +
+  ggtitle("Fixed y-axis") +
+  xlab("Comparison District, Sorted by Increasing Geographic Distance") +
+  ylab("Reletadness (F)") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+```
+
+</br>
+
+- For whatever reason, there are appears to be more sharing between southern districts than northern districts
+- While districts retained a lower (~< 20) samples, Tunduru and Masasi have >~ 50 each.
+- Even Tunduru's witin district comparison gave higher inbreeding coefficients than the other districts:
+
+</br>
+
+```{r wut}
+
+e2 <- e %>%
+  group_by(comparison) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+        lower.ci = av - qt(1 - (0.05 / 2), n - 1) * se,
+        upper.ci = av + qt(1 - (0.05 / 2), n - 1) * se)
+
+e3 <- merge(e2,sp.m2,by=c("comparison"))
+e3$comparison <- factor(e3$comparison, levels=e3$comparison[order(e3$value)])
+
+#My district
+
+dlist <- unique(all_metad1800$DISTRICT)
+flw <- vector("list", length(dlist))
+
+for (x in dlist) {
+  #print(dlist[i])
+  flw[[x]] <- e2 %>%
+    filter(grepl(x, comparison)) %>%
+    separate(comparison,c("d1","d2")," - ") %>%
+    mutate(newd1 = x,
+         newd2 = ifelse(d1 == x, d2, d1),
+         comparison = paste(d1, "-", d2))
+}
+
+e3 <- bind_rows(flw)
+
+e4 <- merge(e3,sp.m2,by=c("comparison"))
+e4$newc <- paste(e4$newd1," - ", e4$newd2)
+e4$newc <- factor(e4$newc, levels=e4$newc[order(e4$value)])
+
+e4$sized1[e4$newd1 == "ILEMELA"] <- 39
+e4$sized1[e4$newd1 == "CHATO"] <- 9
+e4$sized1[e4$newd1 == "BUHIGWE"] <- 50
+e4$sized1[e4$newd1 == "KIBAHA"] <- 73
+e4$sized1[e4$newd1 == "KIGOMA"] <- 131
+e4$sized1[e4$newd1 == "KYELA"] <- 22
+e4$sized1[e4$newd1 == "MASASI"] <- 71
+e4$sized1[e4$newd1 == "MTWARA"] <- 9
+e4$sized1[e4$newd1 == "NANYUMBU"] <- 10
+e4$sized1[e4$newd1 == "NYANGHWALE"] <- 0
+e4$sized1[e4$newd1 == "NYASA"] <- 14
+e4$sized1[e4$newd1 == "TUNDURU"] <- 47
+e4$sized1[e4$newd1 == "UVINZA"] <- 40
+
+e4$sized2[e4$newd2 == "ILEMELA"] <- 39
+e4$sized2[e4$newd2 == "CHATO"] <- 9
+e4$sized2[e4$newd2 == "BUHIGWE"] <- 50
+e4$sized2[e4$newd2 == "KIBAHA"] <- 73
+e4$sized2[e4$newd2 == "KIGOMA"] <- 131
+e4$sized2[e4$newd2 == "KYELA"] <- 22
+e4$sized2[e4$newd2 == "MASASI"] <- 71
+e4$sized2[e4$newd2 == "MTWARA"] <- 9
+e4$sized2[e4$newd2 == "NANYUMBU"] <- 10
+e4$sized2[e4$newd2 == "NYANGHWALE"] <- 0
+e4$sized2[e4$newd2 == "NYASA"] <- 14
+e4$sized2[e4$newd2 == "TUNDURU"] <- 47
+e4$sized2[e4$newd2 == "UVINZA"] <- 40
+
+e4$totalsize <- e4$sized1 + e4$sized2
+
+e4$loc[e4$newd1 == "ILEMELA"] <- "01"
+e4$loc[e4$newd1 == "CHATO"] <- "02"
+e4$loc[e4$newd1 == "NYANGHWALE"] <- "03"
+e4$loc[e4$newd1 == "BUHIGWE"] <- "04"
+e4$loc[e4$newd1 == "KIGOMA"] <- "05"
+e4$loc[e4$newd1 == "UVINZA"] <- "06"
+e4$loc[e4$newd1 == "KYELA"] <- "07"
+e4$loc[e4$newd1 == "NYASA"] <- "08"
+e4$loc[e4$newd1 == "TUNDURU"] <- "09"
+e4$loc[e4$newd1 == "MASASI"] <- "10"
+e4$loc[e4$newd1 == "NANYUMBU"] <- "11"
+e4$loc[e4$newd1 == "MTWARA"] <- "12"
+e4$loc[e4$newd1 == "KIBAHA"] <- "13"
+e4$loc <- factor(e4$loc,levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA (n=39)", "CHATO (n=9)", 
+                                "NYANGHWALE (n=0)","BUHIGWE (n=50)",
+                                "KIGOMA (n=131)","UVINZA (n=40)",
+                                "KYELA (n=22)","NYASA (n=14)",
+                               "TUNDURU (n=47)","MASASI (n=71)",
+                               "NANYUMBU (n=10)","MTWARA (n=9)",
+                               "KIBAHA (n=73)"))
+
+e4$newd2[e4$newd2 == "ILEMELA"] <- "01"
+e4$newd2[e4$newd2 == "CHATO"] <- "02"
+e4$newd2[e4$newd2 == "NYANGHWALE"] <- "03"
+e4$newd2[e4$newd2 == "BUHIGWE"] <- "04"
+e4$newd2[e4$newd2 == "KIGOMA"] <- "05"
+e4$newd2[e4$newd2 == "UVINZA"] <- "06"
+e4$newd2[e4$newd2 == "KYELA"] <- "07"
+e4$newd2[e4$newd2 == "NYASA"] <- "08"
+e4$newd2[e4$newd2 == "TUNDURU"] <- "09"
+e4$newd2[e4$newd2 == "MASASI"] <- "10"
+e4$newd2[e4$newd2 == "NANYUMBU"] <- "11"
+e4$newd2[e4$newd2 == "MTWARA"] <- "12"
+e4$newd2[e4$newd2 == "KIBAHA"] <- "13"
+e4$newd2 <- ordered(e4$newd2,levels = c("01","02","03","04","05","06","07","08","09","10","11","12","13"),
+                     labels = c("ILEMELA", "CHATO", 
+                                "NYANGHWALE","BUHIGWE",
+                                "KIGOMA","UVINZA",
+                                "KYELA","NYASA",
+                               "TUNDURU","MASASI",
+                               "NANYUMBU","MTWARA",
+                               "KIBAHA"))
+
+d5 <- e4 %>%
+  filter(d1 == d2)
+
+ggplot(d5,aes(comparison,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.05)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+</br>
+
+- One thought I had was that given there's a more admixed population in the northern districts compared to the southern districts, is there a possiblity that comparisons within and between north districts are getting skewed because of this?
+    - If that was the case, I would expect higher inbreeding coeffiecients in the northern dstricts if I stratified sample comparisons by the identified subpopultion a each sample belongs to.
+    - For example, inbreeding coefficients when comparing all samples placed within K1 (probablity > 0.5) should be higher (ie, more sharing) than inbreeding coefficients obtained from sample comparisons that don't take population structure into effect.
+
+</br>
+
+```{r admix2}
+
+d5 <- e4 %>%
+  filter(d1 == d2)
+
+e2 <- merge(e,q,by=c("sample_id"))
+
+e3 <- e2 %>%
+  mutate(pop = ifelse(K1 > 0.5, 1, 2)) %>%
+  group_by(pop, comparison) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+        lower.ci = av - qt(1 - (0.05 / 2), n - 1) * se,
+        upper.ci = av + qt(1 - (0.05 / 2), n - 1) * se) %>%
+  filter(comparison == "BUHIGWE - BUHIGWE" |
+           comparison == "CHATO - CHATO" |
+           comparison == "ILEMELA - ILEMELA" |
+           comparison == "KIGOMA - KIGOMA" |
+           comparison == "BUHIGWE - BUHIGWE" |
+           comparison == "UVINZA - UVINZA" |
+           comparison == "KYELA - KYELA" |
+           comparison == "NYASA - NYASA" | 
+           comparison == "TUNDURU - TUNDURU" |
+           comparison == "MASASI - MASASI" | 
+           comparison == "NANYUMBU - NANYUMBU" |
+           comparison == "MTWARA - MTWARA" | 
+           comparison == "KIBAHA - KIBAHA")
+
+d6 <- d5 %>%
+  select(comparison,av,sd,n,se,lower.ci,upper.ci) %>%
+  mutate(pop = 0)
+
+d7 <- dplyr::bind_rows(d6,e3)
+
+ggplot(d7,aes(comparison,av,color=as.factor(pop))) +
+  geom_point(position = position_dodge(width=0.75)) +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.75)) +
+  scale_colour_discrete(name="Pop.",labels = c("Combined", "K1", "K2"))+
+  ylab("Average F") + labs(fill="Pop.") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position="top")
+
+```
+
+</br>
+
+- Not really sure I see the pattern I expected here(red being lower than green/blue...)
+- I also tried making a third K cateogry for admixed samples
+    - K1 or K2: > 0.7
+    - KAdmixed: > 0.3, < 0.7
+
+</br>
+
+```{r admix3}
+
+e2 <- merge(e,q,by=c("sample_id"))
+
+e3 <- e2 %>%
+  mutate(pop = ifelse(K1 > 0.7, 1, ifelse(K2 > 0.7, 2, 3) )) %>%
+  group_by(pop, comparison) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+        lower.ci = av - qt(1 - (0.05 / 2), n - 1) * se,
+        upper.ci = av + qt(1 - (0.05 / 2), n - 1) * se) %>%
+  filter(comparison == "BUHIGWE - BUHIGWE" |
+           comparison == "CHATO - CHATO" |
+           comparison == "ILEMELA - ILEMELA" |
+           comparison == "KIGOMA - KIGOMA" |
+           comparison == "BUHIGWE - BUHIGWE" |
+           comparison == "UVINZA - UVINZA" |
+           comparison == "KYELA - KYELA" |
+           comparison == "NYASA - NYASA" | 
+           comparison == "TUNDURU - TUNDURU" |
+           comparison == "MASASI - MASASI" | 
+           comparison == "NANYUMBU - NANYUMBU" |
+           comparison == "MTWARA - MTWARA" | 
+           comparison == "KIBAHA - KIBAHA")
+
+d6 <- d5 %>%
+  select(comparison,av,sd,n,se,lower.ci,upper.ci) %>%
+  mutate(pop = 0)
+
+d7 <- dplyr::bind_rows(d6,e3)
+ggplot(d7,aes(comparison,av,color=as.factor(pop))) +
+  geom_point(position = position_dodge(width=0.75)) +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.75)) +
+  scale_colour_discrete(name="Pop.",labels = c("Combined", "K1", "K2", "KAdmix"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+</br>
+
+- .... eh. 
+
+<br />
+
+## IBD and Fst
+
+<br />
+
+- If the higher amount of sharing amoung souther districst (as compared to northern districts) is real and not an artificat of population structure, there should also be less population structure detected between these districts.
+
+- Instead of admixture, I looked at the distribution of allele frequencies between each district using Weir and Cockerham Fst (vcftools):
+
+</br>
+
+```{r fst}
+
+#Load data
+f <- read.csv("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/fst.csv",header=TRUE)
+
+# Wide to long
+f2 <- melt(f, id.vars=c("sample_id"))
+f2$value2 <- ifelse(f2$value < 0.0, 0, f2$value)
+# Make heatmap
+
+f2$district <- factor(f2$sample_id, levels = c("ILEMELA", "CHATO", "KIGOMA",
+                                                 "BUHIGWE","UVINZA","KYELA",
+                                                 "NYASA","TUNDURU","MASASI",
+                                                 "NANYUMBU","MTWARA","KIBAHA"))
+f2$variable <- factor(f2$variable, levels = c("ILEMELA", "CHATO", "KIGOMA",
+                                               "BUHIGWE","UVINZA","KYELA",
+                                               "NYASA","TUNDURU","MASASI",
+                                               "NANYUMBU","MTWARA","KIBAHA"))
+
+ggplot(f2, aes(district,variable)) +
+  geom_tile(aes(fill=as.numeric(value2))) +
+  scale_fill_viridis(option="inferno", name="Fst") +
+  scale_x_discrete(c("ILEMELA", "CHATO", "KIGOMA",
+                     "BUHIGWE","UVINZA","KYELA",
+                     "NYASA","TUNDURU","MASASI",
+                     "NANYUMBU","MTWARA","KIBAHA")) +
+  scale_y_discrete(c("ILEMELA", "CHATO", "KIGOMA",
+                     "BUHIGWE","UVINZA","KYELA",
+                     "NYASA","TUNDURU","MASASI",
+                     "NANYUMBU","MTWARA","KIBAHA")) +
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+</br >
+
+- Given strengths of IBD (and the fact that the MIP panel was selected in part by Fst values in Africa), I decided to go with the same plot but using averaged IBD values:
+
+```{r fst-like-but-ibd}
+
+#how about for IBD
+
+f2 <- e4 %>%
+  select(av,d1,d2,Var1,Var2,newc) %>%
+  separate(newc,c("new1","new2"),sep=" - ") %>%
+  mutate( new1 = as.factor(new1),
+          new2 = as.factor(new2))
+
+f2$new12 <- factor(f2$new1, levels = c("ILEMELA ", "CHATO ", "KIGOMA ",
+                                                 "BUHIGWE ","UVINZA ","KYELA ",
+                                                 "NYASA ","TUNDURU ","NANYUMBU ","MASASI ",
+                                                 "MTWARA ","KIBAHA "))
+f2$new22 <- factor(f2$new2, levels = c(" ILEMELA", " CHATO", " KIGOMA",
+                                               " BUHIGWE"," UVINZA"," KYELA",
+                                               " NYASA"," TUNDURU"," NANYUMBU"," MASASI",
+                                               " MTWARA"," KIBAHA"))
+  
+av <- ggplot(f2, aes(new12,new22)) +
+  geom_tile(aes(fill=as.numeric(av))) +
+  scale_fill_viridis(option="inferno", name=expression(paste(italic("F")))) +
+  scale_x_discrete(c("ILEMELA", "CHATO", "KIGOMA",
+                     "BUHIGWE","UVINZA","KYELA",
+                     "NYASA","TUNDURU","NANYUMBU","MASASI",
+                     "MTWARA","KIBAHA")) +
+  scale_y_discrete(c("ILEMELA", "CHATO", "KIGOMA",
+                     "BUHIGWE","UVINZA","KYELA",
+                     "NYASA","TUNDURU","NANYUMBU","MASASI",
+                     "MTWARA","KIBAHA")) +
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size=15),
+        axis.text.y = element_text(size=15))
+
+plot_grid(ibd, av, ncol=2, labels=c("A","B"))
+
+tiff("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/figure4_2020-05-07.tiff",width=1200,height=500)
+  plot_grid(ibd, av, ncol=2, labels=c("A","B"))
+dev.off()
+
+svg("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/figure4_2020-09-11.svg")
+  plot_grid(ibd, av, ncol=2, labels=c("A","B"))
+dev.off()
+
+```
+
+</br>
+
+```{r ave-of-ave}
+
+e2 <- e %>%
+  group_by(comparison) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+        lower.ci = av - qt(1 - (0.05 / 2), n - 1) * se,
+        upper.ci = av + qt(1 - (0.05 / 2), n - 1) * se)
+
+aoa <- merge(e2,sp.m2,by="comparison",all.x=TRUE)
+
+bins <- c(-1,1,200,400,600,800,1000,1200,1400)
+names <- c(1,2,3,4,5,6,7,8)
+aoa$bin <- cut(aoa$value, breaks=bins,labels=names)
+
+aoa2 <- aoa %>%
+  group_by(bin) %>%
+  summarize(avr = mean(as.numeric(av), na.rm=TRUE),
+            sd = sd(as.numeric(av), na.rm=TRUE),
+            n = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se = sd / sqrt(n),
+         lower.ci = avr - qt(1 - (0.05 / 2), n - 1) * se,
+         upper.ci = avr + qt(1 - (0.05 / 2), n - 1) * se)
+
+#average-of-average.ibd.results <- aoa2
+
+ibd <- ggplot(aoa2, aes(bin,avr)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), width=.2,
+                position=position_dodge(0.05))  +
+  ylab(expression(paste("Relatedness (", italic("F"), ")"))) + xlab("Distance (km)") +
+  geom_text(aes(y=0.027,label=elements),vjust=0.5,size=7) +
+  scale_x_discrete(labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,000-1,200","1,201-1,400")) +
+    theme(axis.text.x = element_text(size=20,angle = 45, hjust = 1),
+        axis.text.y = element_text(size=20),
+        axis.title = element_text(size=25))  
+
+#compare values
+
+plot_grid(ibd, av, ncol=2, labels=c("A","B"))
+
+tiff("/nas/longleaf/home/kamoser/daily/1908/tanzania_mip_analysis/figures/figure4_2020-05-07.tiff",width=1200,height=500)
+  plot_grid(ibd, av, ncol=2, labels=c("A","B"))
+dev.off()
+
+```
+
+</br>
+
+- Nice big black/dark purple boxes where geographically close districts are compared
+    - My eye sees more variation (more dark purple shades) among the northern districts compared to the southern districts
+    
+<br />
+
+## Temporal aspect of highly related parasites
+
+<br />
+
+- In answer to a reviewer question: what about dates? Are samples that are highly related (F >= 0.9)
+- I only have dates for the x-sectional sampleing and one TES:
+  - X-sectional sampling occured on Septmeber and October 2017
+  - TES #1 (Kibaha, Kigoma) were collected from January 11 2017 through Octover 31, 2017
+
+<br />
+
+```{r dates }
+
+# re-read in metad because I'm an idiot and dropped this from the original metadata
+
+hotspots <- read.table("/nas/longleaf/home/kamoser/daily/2009/tanzania_mip_analysis/metadata/TZ-JJJ.hotspots.tsv", sep="\t", header=TRUE, stringsAsFactors = FALSE) 
+
+tes.kibaha <- read.table("/nas/longleaf/home/kamoser/daily/2009/tanzania_mip_analysis/metadata/TZ-JJJ_KIBAHA-ASAQ.tsv", sep="\t", header=TRUE, stringsAsFactors = FALSE)
+
+tes.kigoma <- read.table("/nas/longleaf/home/kamoser/daily/2009/tanzania_mip_analysis/metadata/TZ-JJJ_UJIJI_DP.tsv", sep="\t", header=TRUE, stringsAsFactors = FALSE)
+
+#fixing columns
+h1 <- hotspots %>%
+  select(study_id, DATEA) %>%
+  rename(ID = study_id, DATE= DATEA)
+tk1 <- tes.kibaha %>%
+  select(ID, DATE)
+tkig1 <- tes.kigoma %>%
+  select(ID, DATE)
+
+#combining
+new.meta <- rbind(h1, tk1, tkig1)
+
+#fixing a plethora of date issues
+nm1 <- new.meta %>%
+  mutate(newdate = ifelse(DATE == "Sep-17", "01.09.2017", 
+                          ifelse(DATE == "Oct-17", "01.10.2017", 
+                                 ifelse(!grepl("-", DATE), DATE, 
+                                        ifelse(as.character(DATE) == "9/4/2017", "9.4.2017",
+                                               NA))))) %>%
+  mutate(newdate2 = ifelse(is.na(newdate), format(as.Date(as.character(DATE), format="%d-%b-%y")), NA)) %>%
+  mutate(finaldate = ifelse(!is.na(newdate), format(as.Date(as.character(newdate), format="%d.%m.%Y")), newdate2))
+
+#subset to only samples included in the iBD analysis
+samples2 <- samples
+colnames(samples2) <- c("Var2","sample_id")
+test <- merge(metad,nm1,by="ID",all.x=TRUE)
+test2 <- merge(samples2,test,by="sample_id",all.x=TRUE)
+
+# remove samples with no dates (n=327)
+test3 <- test2 %>%
+  filter(!is.na(finaldate)) %>%
+  select(sample_id, finaldate)
+
+test4 <- test3 %>%
+  rename(sample_id2 = sample_id, finaldate2 = finaldate)
+
+test5 <- inf.m7 %>%
+  filter(sample_id2 %in% test3$sample_id & sample_id %in% test3$sample_id)
+
+test6 <- merge(test5, test3)
+test7 <- merge(test6, test4)
+
+test7$time.diff <- as.Date(test7$finaldate) - as.Date(test7$finaldate2)
+
+test7 %>%
+  filter(value >= 0.90) %>%
+  select(sample_id, sample_id2, comparison, value, finaldate, finaldate2, time.diff) %>%
+  kable() %>%
+  kable_styling()
+
+```
+
+<br />
+
+- Here's the distribution of teim between all sample pairs, for the samples we have dates on:
+
+```{r }
+
+hist(abs(as.numeric(test7$time.diff)),xlab="Days apart (absolute value)")
+summary(abs(as.numeric(test7$time.diff)))
+
+plot(abs(as.numeric(test7$time.diff)), test7$value)
+
+```
+
+<br />
+
+```{r hotspots}
+
+hotspots <- all_metad1800 %>%
+  filter(!is.na(pfdens))
+
+hot.ibd <- inf.m7 %>%
+  filter(sample_id %in% hotspots$sample_id & sample_id2 %in% hotspots$sample_id)
+
+e <- merge(hot.ibd,sp.m2,by=c("comparison"))
+
+main <- ggplot(e,aes(value.x)) +
+  geom_histogram(bins=50) +
+  xlab("Relatedness (F)") + ylab("Frequency")
+
+inset <- ggplot(e,aes(value.x)) +
+  geom_histogram(bins=50) +
+  xlab("") + ylab("") +
+  scale_x_continuous(limits = c(0.75, 1.0))
+
+plot.with.inset <- ggdraw() +
+  draw_plot(main) +
+  draw_plot(inset,x=0.5,y=0.5,width = .4, height = .4) 
+
+plot.with.inset
+
+highf <- e %>%
+  filter(value.x >= 0.75) %>%
+  select(comparison,sample_id, sample_id2, value.x) %>%
+  rename(inbreeding.coefficent = value.x )
+
+kable(highf) %>%
+  kable_styling()
+
+
+#try bins of 100 first
+bins <- c(-1,1,100,200,300,400,500,600,700,800,900,1000,1100,1200,1300,1400)
+names <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14),
+                      labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.03,label=elements),vjust=0.5,size=3) +
+  scale_x_discrete(labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300","1,301-1,400")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 150 km bins
+
+bins <- c(-1,1,150,300,450,600,750,900,1050,1200)
+names <- c(1,2,3,4,5,6,7,8,9)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10),
+                      labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.03,label=elements),vjust=0.5,size=3) +
+  ggtitle("Bin size = 150 km") +
+  scale_x_discrete(labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 200 km bins
+
+bins <- c(-1,1,200,400,600,800,1000,1200,1400)
+names <- c(1,2,3,4,5,6,7,8)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8),
+                      labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,001-1,200","1,201-1,400")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab(expression(paste("Relatedness (", italic("F"), ")"))) + xlab("Distance (km)") +
+  geom_text(aes(y=0.026,label=elements),vjust=0.5,size=6) +
+  scale_x_discrete(labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,000-1,200","1,201-1,400")) +
+  ggtitle("Bin size = 200 km") +
+  theme(axis.text.x = element_text(size=25,angle = 45, hjust = 1),
+        axis.text.y = element_text(size=25),
+        axis.title = element_text(size=30)) 
+
+```
+
+
+```{r TES}
+
+tes <- all_metad1800 %>%
+  filter(is.na(pfdens))
+
+tes.ibd <- inf.m7 %>%
+  filter(sample_id %in% test$sample_id & sample_id2 %in% tes$sample_id)
+
+e <- merge(tes.ibd,sp.m2,by=c("comparison"))
+
+main <- ggplot(e,aes(value.x)) +
+  geom_histogram(bins=50) +
+  xlab("Relatedness (F)") + ylab("Frequency")
+
+inset <- ggplot(e,aes(value.x)) +
+  geom_histogram(bins=50) +
+  xlab("") + ylab("") +
+  scale_x_continuous(limits = c(0.75, 1.0))
+
+plot.with.inset <- ggdraw() +
+  draw_plot(main) +
+  draw_plot(inset,x=0.5,y=0.5,width = .4, height = .4) 
+
+plot.with.inset
+
+highf <- e %>%
+  filter(value.x >= 0.75) %>%
+  select(comparison,sample_id, sample_id2, value.x) %>%
+  rename(inbreeding.coefficent = value.x )
+
+kable(highf) %>%
+  kable_styling()
+
+#try bins of 100 first
+bins <- c(-1,1,100,200,300,400,500,600,700,800,900,1000,1100,1200,1300,1400)
+names <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14),
+                      labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.03,label=elements),vjust=0.5,size=3) +
+  scale_x_discrete(labels=c("0","1-100","101-200","201-300","301-400",
+                             "401-500","501-600","601-700","701-800",
+                             "801-900","901-1,000","1,001-1,100",
+                            "1,101-1,200","1,201-1,300","1,301-1,400")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 150 km bins
+
+bins <- c(-1,1,150,300,450,600,750,900,1050,1200)
+names <- c(1,2,3,4,5,6,7,8,9)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8,9,10),
+                      labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab("Relatedness (F)") + xlab("Distance (km)") +
+  geom_text(aes(y=0.03,label=elements),vjust=0.5,size=3) +
+  ggtitle("Bin size = 150 km") +
+  scale_x_discrete(labels=c("0","1-150","151-300","301-450","451-600",
+                            "601-750","751-900","901-1050","1051-1200",
+                            "1201-1350")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 200 km bins
+
+bins <- c(-1,1,200,400,600,800,1000,1200,1400)
+names <- c(1,2,3,4,5,6,7,8)
+e$bin <- cut(e$value.y, breaks=bins,labels=names)
+
+#how many district comparison types per geo distance bin?
+hm <- e %>% 
+  group_by(bin) %>%
+  summarise(elements = n_distinct(comparison))
+
+hm$distance <- factor(hm$bin,levels=c(1,2,3,4,5,6,7,8),
+                      labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,001-1,200","1,201-1,400")) 
+
+# plot inbreeding coefficent by geographic distance
+e2 <- e %>%
+  group_by(bin) %>%
+  summarize(av = mean(value.x),
+            sd = sd(value.x),
+            n.mpg = n(),
+            elements = paste0("n=",n_distinct(comparison))) %>%
+  mutate(se.mpg = sd / sqrt(n.mpg),
+         lower.ci.mpg = av - qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg,
+         upper.ci.mpg = av + qt(1 - (0.05 / 2), n.mpg - 1) * se.mpg)
+
+ggplot(e2,aes(bin,av)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower.ci.mpg, ymax=upper.ci.mpg), width=.2,
+                position=position_dodge(0.05))  +
+  ylab(expression(paste("Relatedness (", italic("F"), ")"))) + xlab("Distance (km)") +
+  geom_text(aes(y=0.026,label=elements),vjust=0.5,size=6) +
+  scale_x_discrete(labels=c("0","1-200","201-400","401-600","601-800",
+                            "801-1,000","1,000-1,200","1,201-1,400")) +
+  ggtitle("Bin size = 200 km") 
+
+
+
+```
+
+
+
+<br />
