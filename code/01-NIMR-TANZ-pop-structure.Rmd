@@ -10,9 +10,9 @@ output:
       toc_depth: 6
     theme: spacelab
     section_divs: yes
-#knit: (function(input_file, encoding) {
-#  out_dir <- '../docs';
-#  rmarkdown::render(input_file, encoding=encoding, output_file=file.path(dirname(input_file), out_dir, #'01-NIMR-TANZ-pop-strucutre.html'))})
+knit: (function(input_file, encoding) {
+  out_dir <- '../docs';
+  rmarkdown::render(input_file, encoding=encoding, output_file=file.path(dirname(input_file), out_dir, '01-NIMR-TANZ-pop-structure.html'))})
 ---
 
 ```{r global option,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
