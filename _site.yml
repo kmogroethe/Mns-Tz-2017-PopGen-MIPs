@@ -4,10 +4,10 @@ navbar:
   title: "Tanz-MIPs"
   left:
   - text: "Home"
-    href: index.html
+   href: index.html
   - text: "Missingness"
-    href: 00-NIMR-TANZ-missingness.html
+   href: 00-NIMR-TANZ-missingness.html
   - text: "Population Structure"
-    href: 01-NIMR-TANZ-pop-structure.html
+   href: 01-NIMR-TANZ-pop-structure.html
 output:
   html_document:
