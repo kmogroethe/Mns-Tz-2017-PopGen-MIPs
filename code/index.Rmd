@@ -2,7 +2,7 @@
 title: "Welcome"
 author: "kamoser"
 date: "September 19, 2020"
-site: bookdown::bookdown_site
+#site: bookdown::bookdown_site
 output: html_document
 knit: (function(input_file, encoding) {
   out_dir <- '../docs';
